@@ -1,0 +1,172 @@
+/* Motion Studio: the home grid of rigs, and the editor (a full-bleed 3D viewport with floating tools and a timeline). */
+
+.content.mo-full { padding: 0; overflow: hidden; position: relative; }
+
+/* ---- home ---- */
+.mo-home { max-width: 1180px; }
+.mo-home header { margin-bottom: 28px; }
+.mo-eyebrow { display: inline-flex; align-items: center; gap: 6px; font: 600 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--brand); }
+.mo-eyebrow svg, .mo svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.mo-home h1 { font: 700 clamp(34px, 4.6vw, 56px)/1 var(--display); margin: 10px 0 12px; text-transform: uppercase; }
+.mo-home header p { color: var(--muted); max-width: 620px; margin: 0; font-size: 15px; }
+.mo-rigs { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.mo-rig { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 14px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel-2); transition: border-color .15s; }
+.mo-rig:hover { border-color: var(--line-strong); }
+.mo-rig-pic { aspect-ratio: 1; border-radius: 10px; background: #0b0b0e; display: grid; place-items: center; overflow: hidden; color: var(--faint); }
+.mo-rig-pic img { width: 100%; height: 100%; object-fit: contain; }
+.mo-rig-pic svg { width: 34px; height: 34px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+.mo-rig-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.mo-rig-body strong { font-size: 15px; }
+.mo-rig-body small { font: 600 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); margin-top: 4px; }
+.mo-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mo-chips button { display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 13px; transition: border-color .12s, background .12s; }
+.mo-chips button:hover { border-color: var(--brand); background: var(--brand-soft); }
+.mo-chips button.made { border-color: rgba(157, 92, 255, .35); }
+.mo-chips i { font: normal 11px var(--mono); color: var(--faint); }
+.mo-none { border: 1px dashed var(--line-strong); border-radius: var(--radius); padding: 36px; text-align: center; color: var(--muted); max-width: 560px; }
+.mo-none strong { color: var(--text); font-size: 16px; }
+
+/* ---- editor ---- */
+.mo { position: absolute; inset: 0; display: flex; flex-direction: column; background: #0a0a0d; user-select: none; }
+.mo-view { position: relative; flex: 1; min-height: 0; background: radial-gradient(120% 90% at 50% 0%, #1a1a22 0%, #0a0a0d 70%); }
+.mo-view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+.mo-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; padding: 40px; text-align: center; }
+.mo-loading.error { color: #fda4af; }
+.mo-grow { flex: 1; }
+.mo button { font: inherit; color: var(--muted); cursor: pointer; }
+.mo button:disabled { opacity: .6; cursor: default; }
+
+.mo-top { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; align-items: center; gap: 10px; pointer-events: none; }
+.mo-top > * { pointer-events: auto; }
+.mo-back { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px 6px 6px; border-radius: 10px; border: 1px solid var(--line); background: rgba(14, 14, 18, .82); font-size: 13px; }
+.mo-back:hover { color: var(--text); border-color: var(--line-strong); }
+.mo-asset { color: var(--faint); font-size: 13px; }
+#moName { width: 190px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(14, 14, 18, .82); color: var(--text); font: 500 13px var(--mono); }
+#moName:focus { outline: none; border-color: var(--brand); }
+.mo-state { font: 11px var(--mono); color: var(--faint); }
+.mo .primary { color: var(--accent-ink); padding: 7px 16px; }
+
+.mo-tools { position: absolute; left: 12px; top: 60px; display: flex; flex-direction: column; gap: 2px; padding: 5px; border-radius: 12px; border: 1px solid var(--line); background: rgba(14, 14, 18, .82); }
+.mo-tools button { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; border: 0; background: none; transition: background .12s, color .12s; }
+.mo-tools button:hover { background: var(--elevated); color: var(--text); }
+.mo-tools button.on { background: var(--brand-soft); color: #c9b3ff; }
+.mo-tools button.txt { font: 600 10px var(--mono); letter-spacing: .02em; height: 24px; }
+.mo-tools hr { border: 0; border-top: 1px solid var(--line); margin: 3px 4px; }
+
+.mo-sel { position: absolute; left: 60px; top: 60px; display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px; min-height: 34px; border-radius: 10px; border: 1px solid var(--line); background: rgba(14, 14, 18, .82); font-size: 13px; color: var(--muted); }
+.mo-sel strong { color: #ffb020; font-weight: 600; }
+.mo-sel select { background: none; border: 0; color: var(--text); font: 13px var(--sans); max-width: 180px; padding: 2px 4px; }
+.mo-sel select option { background: var(--panel-2); }
+.mo-sel button { padding: 3px 9px; border-radius: 8px; border: 1px solid var(--line); background: none; font-size: 12px; }
+.mo-sel button:hover { color: var(--text); border-color: var(--line-strong); }
+.mo-sel button.on { color: #ff8fa0; border-color: rgba(255, 93, 115, .5); background: rgba(255, 93, 115, .1); }
+.mo-sel em { font-style: normal; color: #ffb020; font-size: 12px; }
+
+.mo-time { flex: none; height: 250px; display: flex; flex-direction: column; border-top: 1px solid var(--line); background: var(--panel); transition: height .22s cubic-bezier(.2, .7, .2, 1); }
+.mo-time.folded { height: 45px; }
+.mo-time.folded #moCanvas { visibility: hidden; }
+.mo-bar { flex: none; height: 44px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); white-space: nowrap; overflow-x: auto; scrollbar-width: none; }
+.mo-bar > * { flex: none; }
+.mo-bar > .mo-grow { flex: 1 0 8px; }
+.mo-bar button { display: inline-grid; place-items: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 8px; border: 0; background: none; transition: background .12s, color .12s; }
+.mo-bar button:hover { background: var(--elevated); color: var(--text); }
+.mo-bar button.on { background: var(--brand-soft); color: #c9b3ff; }
+.mo-bar button.txt { font-size: 12px; padding: 0 9px; }
+.mo-bar button.flip svg { transform: rotate(180deg); }
+.mo-bar .mo-play { width: 34px; background: var(--elevated); color: var(--text); }
+.mo-bar select, .mo-bar .mo-num { height: 28px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: 12px var(--mono); padding: 0 6px; }
+.mo-bar .mo-num { width: 58px; text-align: right; }
+.mo-bar .mo-num:focus, .mo-bar select:focus { outline: none; border-color: var(--brand); }
+.mo-dim { font: 12px var(--mono); color: var(--faint); min-width: 44px; }
+.mo-sep { width: 1px; height: 18px; background: var(--line-strong); margin: 0 4px; }
+.mo-field { display: inline-flex; align-items: center; gap: 6px; color: var(--faint); }
+.mo-seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+.mo-seg button { height: 22px; font-size: 12px; padding: 0 9px; }
+#moCanvas { flex: 1; min-height: 0; width: 100%; display: block; touch-action: none; cursor: default; }
+
+/* ---- the popover above the timeline: layers, modifiers, a marker ---- */
+.mo-pop { position: absolute; right: 12px; bottom: 262px; width: 440px; max-height: calc(100% - 340px); overflow-y: auto; padding: 10px; border-radius: 12px; border: 1px solid var(--line-strong); background: rgba(16, 16, 21, .94); box-shadow: 0 18px 50px rgba(0, 0, 0, .5); font-size: 13px; color: var(--muted); animation: mo-pop .16s cubic-bezier(.2, .7, .2, 1); transition: bottom .22s cubic-bezier(.2, .7, .2, 1); }
+.mo-pop[hidden] { display: none; }
+.mo-time.folded + .mo-pop { bottom: 57px; }
+@keyframes mo-pop { from { opacity: 0; transform: translateY(6px); } }
+.mo-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 2px 8px; }
+.mo-pop-head strong { color: var(--text); font-size: 13px; }
+.mo-pop button { height: 26px; min-width: 26px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); background: none; font-size: 12px; }
+.mo-pop button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.mo-pop button:disabled { opacity: .3; }
+.mo-pop button.on { color: #c9b3ff; border-color: rgba(157, 92, 255, .45); background: var(--brand-soft); }
+.mo-pop button.dot { width: 14px; min-width: 14px; height: 14px; padding: 0; border-radius: 50%; border: 1.5px solid var(--faint); flex: none; }
+.mo-pop .active button.dot, .mo-pop button.dot.on { background: #ffb020; border-color: #ffb020; }
+.mo-pop input[type="text"], .mo-pop select { height: 26px; min-width: 0; flex: 1; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: 12px var(--sans); padding: 0 8px; max-width: none; }
+.mo-pop input[type="text"]:focus, .mo-pop select:focus { outline: none; border-color: var(--brand); }
+.mo-pop input[type="range"] { flex: 1; min-width: 60px; accent-color: #9d8cff; height: 4px; }
+.mo-row { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 8px; }
+.mo-row.active { background: rgba(255, 176, 32, .07); }
+.mo-row.base { color: var(--faint); border-top: 1px solid var(--line); border-radius: 0; margin-top: 4px; padding-top: 9px; justify-content: space-between; }
+.mo-row.base em { font-style: normal; font-family: var(--mono); font-size: 12px; }
+.mo-hint { margin: 8px 4px 2px; font-size: 12px; color: var(--faint); line-height: 1.5; }
+.mo-mod { border: 1px solid var(--line); border-radius: 10px; padding: 8px; margin-bottom: 6px; transition: opacity .15s; }
+.mo-mod.off { opacity: .5; }
+.mo-mod-head { display: flex; align-items: center; gap: 8px; }
+.mo-mod-head strong { color: var(--text); }
+.mo-mod-head span { flex: 1; font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mo-mod-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mo-mod-body select { flex: 0 1 170px; }
+.mo-mod-body label { display: flex; align-items: center; gap: 8px; flex: 1 1 100%; }
+.mo-mod-body output { font: 12px var(--mono); color: var(--text); min-width: 52px; text-align: right; }
+.mo-mod-body em { font-style: normal; color: #ffb020; font-size: 12px; }
+.mo-marks { display: flex; flex-wrap: wrap; gap: 5px; padding: 4px 6px 6px; }
+.mo-marks button { font: 11px var(--mono); height: 22px; }
+
+/* ---- Easy mode: the timeline gives way to a strip of pose cards ---- */
+.mo-mode { display: inline-flex; padding: 3px; border-radius: 10px; border: 1px solid var(--line); background: rgba(14, 14, 18, .82); }
+.mo-mode button { height: 26px; padding: 0 14px; border: 0; border-radius: 7px; background: none; font-size: 13px; font-weight: 600; transition: background .12s, color .12s; }
+.mo-mode button:hover { color: var(--text); }
+.mo-mode button.on { background: var(--brand); color: #fff; }
+.mo-easy { display: none; flex: none; flex-direction: column; border-top: 1px solid var(--line); background: var(--panel); }
+.mo.easy .mo-easy { display: flex; }
+.mo.easy .mo-time, .mo.easy .mo-pop { display: none; }
+.mo.easy .mo-sel { font-size: 14px; padding: 7px 12px; }
+.mo.easy .mo-sel .mo-seg button { border: 0; height: 24px; }
+.mo.easy .mo-sel .mo-seg button.on { background: var(--brand-soft); color: #c9b3ff; }
+
+.mo-ebar { display: flex; align-items: center; gap: 14px; padding: 12px 16px 4px; }
+.mo-eplay { flex: none; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--brand); color: #fff !important; transition: transform .12s; }
+.mo-eplay:hover { transform: scale(1.06); }
+.mo-eplay svg { width: 20px; height: 20px; }
+#moScrub { flex: 1; min-width: 80px; height: 6px; accent-color: #ff5d73; cursor: pointer; }
+.mo-etime { flex: none; font: 12px var(--mono); color: var(--faint); min-width: 92px; text-align: right; }
+.mo-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line); background: none; font-size: 13px; }
+.mo-chip:hover { color: var(--text); border-color: var(--line-strong); }
+.mo-chip.on { color: #c9b3ff; border-color: rgba(157, 92, 255, .45); background: var(--brand-soft); }
+.mo-ebar .mo-seg { flex: none; padding: 3px; }
+.mo-ebar .mo-seg button { height: 24px; padding: 0 11px; border: 0; border-radius: 6px; background: none; font-size: 13px; }
+.mo-ebar .mo-seg button:hover:not(:disabled) { color: var(--text); }
+.mo-ebar .mo-seg button.on { background: var(--brand-soft); color: #c9b3ff; }
+
+.mo-strip { display: flex; align-items: center; gap: 8px; padding: 10px 16px 14px; overflow-x: auto; scrollbar-width: thin; }
+.mo-strip > * { flex: none; }
+.mo-pose { position: relative; border-radius: 12px; }
+.mo-pose-pic { position: relative; display: block; width: 88px; height: 104px; padding: 0; border-radius: 12px; border: 2px solid var(--line); background: #0b0b0e; overflow: hidden; transition: border-color .12s, transform .12s; }
+.mo-pose-pic:hover { border-color: var(--line-strong); transform: translateY(-2px); }
+.mo-pose.on .mo-pose-pic { border-color: #ffb020; }
+.mo-pose-pic img { position: absolute; inset: 0 0 18px; width: 100%; height: calc(100% - 18px); object-fit: cover; }
+.mo-pose-pic b { position: absolute; top: 5px; left: 6px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: rgba(14, 14, 18, .85); color: var(--text); font: 700 12px/20px var(--mono); text-align: center; }
+.mo-pose.on .mo-pose-pic b { background: #ffb020; color: #1a1200; }
+.mo-pose-pic i { position: absolute; left: 0; right: 0; bottom: 3px; font: normal 11px var(--mono); color: var(--faint); text-align: center; }
+.mo-pose-acts { position: absolute; top: 5px; right: 5px; display: none; flex-direction: column; gap: 3px; }
+.mo-pose.on .mo-pose-acts, .mo-pose:hover .mo-pose-acts, .mo-pose:focus-within .mo-pose-acts { display: flex; }
+.mo-pose-acts button { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; border: 0; background: rgba(14, 14, 18, .85); }
+.mo-pose-acts button:hover { color: var(--text); background: var(--elevated); }
+.mo-pose-acts svg { width: 14px; height: 14px; }
+.mo-gap { padding: 3px 7px; border-radius: 999px; border: 1px dashed var(--line-strong); background: none; font: 11px var(--mono); color: var(--faint); }
+button.mo-gap:hover { color: var(--text); border-color: var(--brand); border-style: solid; }
+.mo-add { display: grid; place-items: center; align-content: center; gap: 6px; width: 88px; height: 104px; border-radius: 12px; border: 2px dashed var(--line-strong); background: none; font-size: 13px; font-weight: 600; transition: border-color .12s, color .12s, background .12s; }
+.mo-add:hover { border-color: var(--brand); color: var(--text); background: var(--brand-soft); }
+.mo-add svg { width: 22px; height: 22px; }
+.mo-coach { margin: 0 0 0 10px; max-width: 300px; font-size: 14px; line-height: 1.45; color: var(--muted); }
+
+/* The floating Tess bar sits above the pose strip, not on it. */
+body:has(.mo.easy) #chatWin.bar { bottom: 232px; }
+.mo-none .tess-art { height: clamp(240px, 36vh, 360px); margin: -12px auto 6px; }
+.mo-none:has(.tess-art) { max-width: 720px; padding-top: 28px; }

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Missing tile · Tessera Studio</title>
+<meta name="robots" content="noindex">
+<!-- GitHub Pages serves this page for any missing path, so links resolve from the site root, not from the bad URL. -->
+<script>document.write('<base href="' + (location.pathname.startsWith("/tessera/") ? "/tessera/" : "/") + '">');</script>
+<meta name="theme-color" content="#050507">
+<link rel="icon" href="landing/tessera-mark.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700&family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+:root { --bg: #050507; --text: #f3f1f8; --muted: #a9a5b7; --v: #9d5cff; --v-hi: #d2bcff; --line-2: rgba(255, 255, 255, .15);
+  --display: "Barlow Condensed", "Arial Narrow", sans-serif; --sans: Inter, system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, monospace; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100svh; background: radial-gradient(900px 600px at 70% 60%, rgba(157, 92, 255, .14), transparent 70%), var(--bg);
+  color: var(--text); font: 400 17px/1.6 var(--sans); display: flex; flex-direction: column; overflow-x: hidden; }
+header { width: min(1220px, calc(100vw - 32px)); margin: 0 auto; padding: 22px 0; }
+.logo { display: inline-flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; font: 700 22px/1 var(--display); letter-spacing: .07em; }
+.logo img { width: 26px; height: 26px; }
+main { flex: 1; width: min(1220px, calc(100vw - 32px)); margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); align-items: center; gap: 24px; }
+.code { font: 500 14px var(--mono); color: var(--v-hi); letter-spacing: .12em; }
+h1 { font: 800 clamp(44px, 7vw, 84px)/.98 var(--sans); letter-spacing: -.04em; margin: 12px 0 16px; }
+h1 em { font-style: normal; color: var(--v-hi); }
+p { color: var(--muted); max-width: 440px; margin: 0 0 28px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 12px; background: var(--text); color: #0b0a10; font-weight: 600; text-decoration: none; transition: transform .2s; }
+.btn:hover { transform: translateY(-2px); }
+.art img { width: 100%; height: auto; display: block; animation: in 1s cubic-bezier(.2, .8, .2, 1) both, float 7s ease-in-out 1s infinite; }
+@keyframes in { from { opacity: 0; transform: translateX(30px); } }
+@keyframes float { 50% { translate: 0 -10px; } }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; padding-bottom: 40px; } .art { order: -1; } }
+@media (prefers-reduced-motion: reduce) { .art img { animation: none; } }
+</style>
+</head>
+<body>
+<header><a class="logo" href="./"><img src="landing/tessera-mark.svg" alt="">TESSERA</a></header>
+<main>
+  <div>
+    <div class="code">404 · MISSING TILE</div>
+    <h1>This page <em>isn't here.</em></h1>
+    <p>Tess looked everywhere, but this tile was never made. The link may be old, or the page moved.</p>
+    <a class="btn" href="./">Back to Tessera</a>
+  </div>
+  <div class="art"><img src="landing/tess-404.webp" width="1497" height="839" alt="Tess shining a flashlight into an empty tile frame"></div>
+</main>
+</body>
+</html>

@@ -1,0 +1,1247 @@
+"""Asset studio: generate images and 3D for any Markdown asset, whatever the folder structure.
+
+Conventions (no folder names are assumed):
+  * An asset is any ``.md`` whose header has a ``kind:`` (character, item, ui, …). Its ``prompt:``
+    is the subject description. ``winner:`` records the chosen image.
+  * Pillars are reference images that keep the art style consistent. Images in ``pillars/`` at the
+    workspace root are the project bible and go with every generation; ``pillars/`` inside any folder
+    applies to every asset below that folder. Pillars stack down the asset's folder path.
+  * Text files (``.md``/``.txt``) in a ``pillars/`` folder are the style bible: text that is put in
+    front of every prompt below that folder (T-pose, polygon budget, palette…), inherited the same way.
+  * A folder README header may set ``style:`` (a text rule that is inherited the same way).
+  * Outputs are saved next to the asset in ``<asset-name>/{candidates,variants,edits,3d}/`` and in the
+    project vault at ``vault/<asset path>/<kind>/`` with a JSON sidecar recording exactly what was sent.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import os
+from functools import lru_cache
+import shutil
+import time
+from pathlib import Path
+from typing import Any
+
+from forge.layout import Layout
+from forge import tripo
+from forge.blueprint_contract import read_frontmatter, serialize_frontmatter, split_frontmatter
+from forge.config import load_config
+from forge.models import AssetType
+from forge.overview import FOLDER_PAGES, IMAGE_SUFFIXES, MODEL_SUFFIXES, TRASH_DIR, move_to_trash, project_dimension, resolve_rel
+from forge.prompt_sanitize import finalize_generation_prompt
+from forge.providers.base import ProviderCapability
+from forge.providers.elevenlabs_image import resolve_image_provider
+
+PILLAR_DIR = "pillars"
+REF_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+MAX_REFERENCES = 8
+OUTPUT_KINDS = ("candidates", "variants", "edits", "views", "sheets", "3d", "rig", "animations", "textures", "parts", "icons", "sprites", "audio")
+# Imported engine files the browser can't preview (Godot .res clips, .blend, .anim) are still listed.
+LISTED_FILE_SUFFIXES = {".res", ".tres", ".anim", ".blend", ".dae", ".tga", ".exr", ".psd"}
+ACTIONS = ("candidates", "variant", "edit", "views", "prop_sheet", "trim_sheet", "make_3d", "rig", "animate")
+ACTION_FOLDER = {"candidates": "candidates", "variant": "variants", "edit": "edits", "views": "views", "prop_sheet": "sheets", "trim_sheet": "sheets", "make_3d": "3d", "rig": "rig", "animate": "animations"}
+# Turnaround views generated from the winner; "{view}" is filled in per image.
+TURNAROUND_VIEWS = ("left side view (profile)", "back view", "three-quarter front view")
+TEXT_PILLAR_SUFFIXES = {".md", ".txt"}
+EXTRA_MODEL_SUFFIXES = {".usdz", ".stl"}
+# Choices offered on the Make 3D sheet; anything else sent in a request falls back to the config default.
+MESH_CHOICES: dict[str, list[Any]] = {
+    "ai_model": ["meshy-7.1", "meshy-6", "meshy-6-lite", "meshy-t2.5", "meshy-t2"],
+    "model_type": ["standard", "smart-topology"],
+    "topology": ["triangle", "quad"],
+    "texture_resolution": ["2k", "4k"],
+    "pose_mode": ["", "a-pose", "t-pose"],
+    "origin_at": ["bottom", "center"],
+    "target_formats": ["glb", "obj", "fbx", "usdz", "stl"],
+}
+POLYCOUNT_PRESETS = (1500, 3000, 6000, 12000, 30000, 100000)
+# The fixed set of asset kinds; the UI offers these as tags so nobody has to type them.
+ASSET_KINDS = ("character", "creature", "item", "weapon", "prop", "environment", "level", "vehicle", "ui", "vfx", "sfx", "voice", "music", "material", "kit")
+# The shape and background each kind of image gets unless Settings → Generators or the asset itself says otherwise.
+# "cutout": the subject alone, background removed. "scene": a whole picture, background kept.
+KIND_DEFAULTS: dict[str, dict[str, str]] = {
+    "character": {"aspect": "3:4", "background": "cutout"},
+    "creature": {"aspect": "3:4", "background": "cutout"},
+    "item": {"aspect": "1:1", "background": "cutout"},
+    "weapon": {"aspect": "1:1", "background": "cutout"},
+    "prop": {"aspect": "1:1", "background": "cutout"},
+    "vehicle": {"aspect": "4:3", "background": "cutout"},
+    "environment": {"aspect": "16:9", "background": "scene"},
+    "level": {"aspect": "16:9", "background": "scene"},
+    "ui": {"aspect": "3:4", "background": "cutout"},
+    "vfx": {"aspect": "16:9", "background": "cutout"},
+    "material": {"aspect": "1:1", "background": "scene"},
+}
+KIND_ASPECT = {kind: d["aspect"] for kind, d in KIND_DEFAULTS.items()}
+# Kinds that are a whole picture by default: their background is part of the image, so it is never cut out.
+SCENE_KINDS = tuple(kind for kind, d in KIND_DEFAULTS.items() if d["background"] == "scene")
+# How strongly the pillars steer an asset (`pillars:` in its header): off, light, normal (default) or strong.
+PILLAR_STRENGTHS = ("off", "light", "normal", "strong")
+# Sound assets: their "candidates" are audio files in <asset>/audio/, the prompt describes the sound (or, for a voice,
+# is the line to speak) and the winner is the chosen take.
+AUDIO_KINDS = ("sfx", "voice", "music")
+AUDIO_SUFFIXES = {".mp3", ".wav", ".ogg", ".flac"}
+AUDIO_MODELS = (
+    # Signed-in services come first: when the user signed in, that is the account they mean to use.
+    {"id": "svc:elevenlabs/sfx", "label": "ElevenLabs · sound effects (signed in)", "kinds": ["sfx"], "service": "elevenlabs"},
+    {"id": "svc:elevenlabs/tts", "label": "ElevenLabs · voices (signed in)", "kinds": ["voice"], "service": "elevenlabs"},
+    {"id": "svc:elevenlabs/music", "label": "ElevenLabs · music (signed in)", "kinds": ["music"], "service": "elevenlabs"},
+    {"id": "elevenlabs_audio:sfx", "label": "ElevenLabs · sound effects", "kinds": ["sfx"], "key": "elevenlabs"},
+    {"id": "stability_audio:sfx", "label": "Stable Audio · sound effects", "kinds": ["sfx"], "key": "stability"},
+    {"id": "elevenlabs_audio:tts", "label": "ElevenLabs · voices", "kinds": ["voice"], "key": "elevenlabs"},
+    {"id": "stability_audio:music", "label": "Stable Audio · music & loops", "kinds": ["music"], "key": "stability"},
+)
+AUDIO_CAPABILITY = {"sfx": ProviderCapability.SOUND_EFFECT, "tts": ProviderCapability.TEXT_TO_SPEECH, "music": ProviderCapability.TEXT_TO_MUSIC}
+
+PILLAR_RULE = (
+    "Use the attached reference images only for art style: rendering, brushwork, material handling, lighting and "
+    "camera angle. They show other characters, so do not copy their gender, faces, bodies, proportions, pose, "
+    "clothing, props, emblems, logos or markings. Create the new subject exactly as described at the top; the description decides who it "
+    "is, and the style bible never overrides it."
+)
+PILLAR_RULE_LIGHT = (
+    "Loosely follow the colour palette and rendering of the attached reference images. Copy nothing else from them: "
+    "no subjects, shapes, emblems, logos, markings or props. Create the new subject exactly as described at the top."
+)
+PILLAR_RULE_STRONG = PILLAR_RULE + " Match their art style closely: same rendering, materials, outline and lighting."
+VARIANT_RULE = (
+    "Create a variant of the first attached image. Keep the same subject, silhouette, proportions, pose, "
+    "camera angle and art style; change only what is described above."
+)
+VIEWS_RULE = (
+    "Draw the exact same subject as the first attached image from a different angle: {view}. Keep the identity, "
+    "outfit, colours, proportions, pose and art style identical; full body, centred, plain background."
+)
+MATERIAL_RULE = (
+    "Show this surface as a seamless, tileable flat game texture: the camera looks straight at it and it fills the whole "
+    "image, edge to edge, with what leaves one side carrying on at the opposite side. "
+    "Even, shadowless light. No perspective, horizon, objects, frame, vignette or text, and no single feature that stands "
+    "out: the pattern is spread evenly, so it can repeat."
+)
+EDIT_RULE = "Edit the first attached image. Change only what is described above and keep everything else identical."
+# Level kit: one picture of a level section, then every prop in it on one sheet that Tessera cuts up on this computer,
+# instead of one paid image per prop.
+def prop_sheet_rule(dimension: str) -> str:
+    """The prop sheet instruction; 3D projects get props for a 3D model, 2D and hybrid ones flat sprites."""
+    view = (
+        "seen from the front at a slight top-down angle, as for a 3D model" if dimension == "3d"
+        else "drawn as flat 2D game sprites in the same camera view as the level picture"
+    )
+    return (
+        "The attached image is a game level section. Make a prop sheet from it: draw every separate prop, piece of "
+        "furniture and decoration you can see in it (not the floor, walls or characters) once each, in the same art style, "
+        f"materials and colours, each one whole and {view}. "
+        "Lay them out in a tidy grid with wide empty space between them so none touch or overlap. Plain flat light grey "
+        "background (#E5E5E5), no shadows on the ground, no text, labels, numbers or borders."
+    )
+
+
+TRIM_SHEET_RULE = (
+    "The attached image is a game level. Make a sheet of its architectural trim: draw a pillar, an arch, a door frame, a "
+    "wall corner cap, a beam and a skirting or ledge section, once each, in the same art style, materials and colours, "
+    "each one whole, straight and seen from the front, as for a 3D model. Lay them out in a tidy grid with wide empty "
+    "space between them so none touch or overlap. Plain flat light grey background (#E5E5E5), no shadows on the ground, "
+    "no text, labels, numbers or borders."
+)
+
+
+# ---------- reading assets ----------
+
+@lru_cache(maxsize=64)
+def _resolved(folder: str) -> Path:
+    return Path(folder).resolve()
+
+
+def _ws_rel(ws_dir: Path, path: Path) -> str:
+    # Resolving a path asks Windows about every file (about half a millisecond each, thousands per listing).
+    # Paths built from the workspace folder are already inside it, so plain path arithmetic is enough.
+    root = _resolved(str(ws_dir))
+    for base in (root, ws_dir):
+        try:
+            rel = path.relative_to(base)
+        except ValueError:
+            continue
+        if ".." not in rel.parts:
+            return rel.as_posix()
+    return path.resolve().relative_to(root).as_posix()
+
+
+def read_asset(ws_dir: Path, rel: str) -> tuple[Path, dict[str, Any], str]:
+    path = resolve_rel(ws_dir, rel)
+    if not path.is_file() or path.suffix.lower() != ".md":
+        raise FileNotFoundError(f"No asset document '{rel}'.")
+    meta, body, _ = read_frontmatter(path)
+    return path, meta, body
+
+
+def is_asset(meta: dict[str, Any]) -> bool:
+    return bool(str(meta.get("kind") or "").strip())
+
+
+def output_dir(asset_path: Path) -> Path:
+    return asset_path.parent / asset_path.stem
+
+
+def _folder_meta(directory: Path) -> dict[str, Any]:
+    for name in FOLDER_PAGES + ("GAME.md",):
+        page = directory / name
+        if page.is_file():
+            return read_frontmatter(page)[0]
+    return {}
+
+
+def _chain(ws_dir: Path, asset_path: Path) -> list[Path]:
+    """Workspace root down to the asset's own folder."""
+    root = _resolved(str(ws_dir))
+    folders = [root]
+    for part in Path(_ws_rel(ws_dir, asset_path)).parent.parts:
+        folders.append(folders[-1] / part)
+    return folders
+
+
+def _label(ws_dir: Path, folder: Path) -> str:
+    rel = _ws_rel(ws_dir, folder)
+    return "Project bible" if rel in ("", ".") else rel
+
+
+def collect_pillars(ws_dir: Path, asset_path: Path) -> list[dict[str, str]]:
+    pillars: list[dict[str, str]] = []
+    for folder in _chain(ws_dir, asset_path):
+        pillar_dir = folder / PILLAR_DIR
+        if not pillar_dir.is_dir():
+            continue
+        for image in sorted(pillar_dir.iterdir(), key=lambda p: p.name.lower()):
+            if image.is_file() and image.suffix.lower() in REF_IMAGE_SUFFIXES:
+                pillars.append({"path": _ws_rel(ws_dir, image), "source": _label(ws_dir, folder)})
+    return pillars
+
+
+def read_text_pillar(path: Path) -> str:
+    _, body, _ = split_frontmatter(path.read_text(encoding="utf-8", errors="ignore"))
+    lines = body.strip().splitlines()
+    if lines and lines[0].startswith("# "):
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def collect_text_pillars(ws_dir: Path, asset_path: Path) -> list[dict[str, str]]:
+    """Style-bible text from every `pillars/` folder on the asset's path, project root first."""
+    texts: list[dict[str, str]] = []
+    for folder in _chain(ws_dir, asset_path):
+        pillar_dir = folder / PILLAR_DIR
+        if not pillar_dir.is_dir():
+            continue
+        for doc in sorted(pillar_dir.iterdir(), key=lambda p: p.name.lower()):
+            if doc.is_file() and doc.suffix.lower() in TEXT_PILLAR_SUFFIXES:
+                text = read_text_pillar(doc)
+                if text:
+                    texts.append({"path": _ws_rel(ws_dir, doc), "source": _label(ws_dir, folder), "text": text})
+    return texts
+
+
+def pillar_targets(ws_dir: Path, rel: str) -> list[dict[str, str]]:
+    """Folders an image from this asset can become a pillar for: the project bible down to the asset's folder."""
+    root = ws_dir.resolve()
+    return [{"path": "" if f == root else _ws_rel(ws_dir, f), "label": _label(ws_dir, f)} for f in _chain(ws_dir, resolve_rel(ws_dir, rel))]
+
+
+def make_pillar(ws_dir: Path, image_rel: str, folder_rel: str) -> str:
+    """Copy an image into `<folder>/pillars/` so it is sent with every generation below that folder."""
+    image = resolve_rel(ws_dir, image_rel)
+    if not image.is_file() or image.suffix.lower() not in REF_IMAGE_SUFFIXES:
+        raise FileNotFoundError(f"No image '{image_rel}'.")
+    folder = resolve_rel(ws_dir, folder_rel) if folder_rel else ws_dir.resolve()
+    if not folder.is_dir():
+        raise FileNotFoundError(f"No folder '{folder_rel}'.")
+    target_dir = folder / PILLAR_DIR
+    target_dir.mkdir(exist_ok=True)
+    target = target_dir / image.name
+    index = 2
+    while target.exists():
+        target = target_dir / f"{image.stem}-{index}{image.suffix}"
+        index += 1
+    shutil.copy2(image, target)
+    return _ws_rel(ws_dir, target)
+
+
+def default_image_model(cfg: Any) -> str:
+    """The Settings default image model, or, when that one has no key, the first model that can run.
+
+    A user with only a Meshy key (or sign-in) must not get every first generation sent to Gemini without a key."""
+    chosen = cfg.default_image_model
+    if chosen.startswith("svc:") or cfg.demo_mode:
+        return chosen
+    models = list_image_models()
+    if any(m["id"] == chosen and m["available"] for m in models):
+        return chosen
+    return next((m["id"] for m in models if m["available"]), chosen)
+
+
+def list_image_models() -> list[dict[str, Any]]:
+    """Image models the studio can send to, with price per image and whether a key is set."""
+    from forge.providers.elevenlabs_image import IMAGE_MODELS, prefixed_model_id
+    from forge.providers.gemini_image import MODEL_PRICING_USD
+
+    from forge import meshy_login
+
+    cfg = load_config()
+    # How each provider is reached, shown in the model menu: a pasted key, the user's sign-in, or nothing yet.
+    via = {name: "API key" if cfg.get_key(name, logins=False) else "" for name in ("gemini", "meshy", "elevenlabs")}
+    if not via["meshy"] and meshy_login.signed_in():
+        via["meshy"] = "signed in"
+    models = []
+    for model_id, price in MODEL_PRICING_USD.items():
+        if model_id == "gemini-2.5-flash-image":
+            continue
+        meshy = model_id.startswith("meshy:")
+        name = model_id.split(":", 1)[-1].removeprefix("gemini-").replace("-", " ").title().replace("Gpt", "GPT")
+        name = re.sub(r"(\d) (\d)", r"\1.\2", name)
+        models.append({"id": model_id, "label": f"{'Meshy' if meshy else 'Gemini'} · {name}", "price": price, "available": bool(via[provider := "meshy" if meshy else "gemini"]), "via": via[provider]})
+    for model_id, spec in IMAGE_MODELS.items():
+        models.append({"id": prefixed_model_id(model_id), "label": spec.label, "price": spec.usd, "available": bool(via["elevenlabs"]), "via": via["elevenlabs"]})
+    # Models installed in Settings → This PC: free, so they come first.
+    from forge.local_ai import catalog, runtime
+
+    local = [{"id": f"local:{mid}", "label": f"This PC · {catalog.get(mid).label}", "price": 0.0, "available": True, "via": "this PC", "local": True}
+             for mid in runtime.installed_ids() if catalog.get(mid) and catalog.get(mid).kind == "image"]
+    return local + models
+
+
+def collect_style_rules(ws_dir: Path, asset_path: Path, meta: dict[str, Any]) -> list[dict[str, str]]:
+    rules = []
+    for folder in _chain(ws_dir, asset_path):
+        style = str(_folder_meta(folder).get("style") or "").strip()
+        if style:
+            rules.append({"source": _label(ws_dir, folder), "text": style})
+    own = str(meta.get("style") or "").strip()
+    if own:
+        rules.append({"source": "This asset", "text": own})
+    return rules
+
+
+def list_outputs(ws_dir: Path, asset_path: Path) -> dict[str, list[dict[str, Any]]]:
+    base = output_dir(asset_path)
+    outputs: dict[str, list[dict[str, Any]]] = {kind: [] for kind in OUTPUT_KINDS}
+    for kind in OUTPUT_KINDS:
+        folder = base / kind
+        if not folder.is_dir():
+            continue
+        files = sorted((p for p in folder.iterdir() if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+        models: dict[str, dict[str, Any]] = {}
+        for file in files:
+            suffix = file.suffix.lower()
+            if file.stem.endswith("_thumb"):
+                continue
+            if suffix in AUDIO_SUFFIXES:
+                outputs[kind].append({"path": _ws_rel(ws_dir, file), "type": "audio"})
+            elif suffix in IMAGE_SUFFIXES:
+                if kind in ("3d", "rig", "animations"):
+                    continue  # textures a model file points at, kept next to it
+                outputs[kind].append({"path": _ws_rel(ws_dir, file), "type": "image"})
+            elif suffix in LISTED_FILE_SUFFIXES:
+                outputs[kind].append({"path": _ws_rel(ws_dir, file), "type": "file"})
+            elif suffix in MODEL_SUFFIXES or suffix in EXTRA_MODEL_SUFFIXES:
+                # One card per model: the GLB (or first file), with every other export format alongside.
+                entry = models.get(file.stem)
+                if entry is None:
+                    entry = models[file.stem] = {"path": _ws_rel(ws_dir, file), "type": "model", "formats": {}}
+                    thumb = file.with_name(f"{file.stem}_thumb.png")
+                    if thumb.is_file():
+                        entry["thumb"] = _ws_rel(ws_dir, thumb)
+                    outputs[kind].append(entry)
+                entry["formats"][suffix.lstrip(".")] = _ws_rel(ws_dir, file)
+                if suffix == ".glb":
+                    entry["path"] = _ws_rel(ws_dir, file)
+    return outputs
+
+
+def describe_asset(ws_dir: Path, rel: str, full: bool = True) -> dict[str, Any]:
+    """One asset: its page, its outputs and (with `full`) the pillars and style rules that apply to it.
+
+    Lists of many assets (board, vault) pass `full=False`: they never show pillars, and collecting them
+    for every asset is most of the cost."""
+    path, meta, body = read_asset(ws_dir, rel)
+    if not full:
+        return {
+            "path": _ws_rel(ws_dir, path), "is_asset": is_asset(meta), "kind": meta.get("kind") or "",
+            "prompt": str(meta.get("prompt") or ""), "winner": meta.get("winner") or "", "meta": meta, "body": body,
+            "pillars": [], "text_pillars": [], "style_rules": [], "outputs": list_outputs(ws_dir, path),
+        }
+    return {
+        "path": _ws_rel(ws_dir, path),
+        "is_asset": is_asset(meta),
+        "kind": meta.get("kind") or "",
+        "prompt": str(meta.get("prompt") or ""),
+        "winner": meta.get("winner") or "",
+        "meta": meta,
+        "body": body,
+        "pillars": collect_pillars(ws_dir, path),
+        "text_pillars": collect_text_pillars(ws_dir, path),
+        "style_rules": collect_style_rules(ws_dir, path, meta),
+        "outputs": list_outputs(ws_dir, path),
+    }
+
+
+def update_asset(ws_dir: Path, rel: str, fields: dict[str, Any]) -> dict[str, Any]:
+    path, meta, body = read_asset(ws_dir, rel)
+    if fields.get("kind") and fields["kind"] not in ASSET_KINDS:
+        raise ValueError(f"Kind must be one of: {', '.join(ASSET_KINDS)}.")
+    winner = fields.get("winner")
+    if winner and not resolve_rel(ws_dir, str(winner)).is_file():
+        raise FileNotFoundError(f"No image '{winner}'.")
+    # Placement set in the viewer: checked here so a bad value never reaches tessera/ASSETS.md.
+    from forge import model_info
+
+    fields = dict(fields)
+    if fields.get("front"):
+        fields["front"] = model_info.clean_front(fields["front"])
+    if fields.get("points"):
+        fields["points"] = model_info.clean_points(fields["points"])
+    if fields.get("anim_loops"):
+        fields["anim_loops"] = model_info.clean_loops(fields["anim_loops"])
+    if fields.get("height_m"):
+        try:
+            height = float(fields["height_m"])
+        except (TypeError, ValueError):
+            raise ValueError("height_m must be a number of metres.") from None
+        if not 0.01 <= height <= 1000:
+            raise ValueError("height_m must be between 0.01 and 1000 metres.")
+        fields["height_m"] = round(height, 3)
+    for key, value in fields.items():
+        if value is None or value == "":
+            meta.pop(key, None)
+        else:
+            meta[key] = value
+    path.write_text(serialize_frontmatter(meta, body), encoding="utf-8")
+    if winner and meta.get("cover"):
+        set_project_cover(ws_dir, str(winner))
+    return describe_asset(ws_dir, rel)
+
+
+# ---------- key art ----------
+# A project's key art is an ordinary asset with `cover: true`: its winner is copied to the workspace's
+# cover image, which the overview and the projects page show. Picking another winner updates the cover.
+
+KEY_ART_FILE = "key-art.md"
+
+
+def set_project_cover(ws_dir: Path, image_rel: str) -> str:
+    image = resolve_rel(ws_dir, image_rel)
+    if not image.is_file() or image.suffix.lower() not in IMAGE_SUFFIXES:
+        raise FileNotFoundError(f"No image '{image_rel}'.")
+    root = ws_dir.resolve()
+    for old in root.iterdir():
+        if old.is_file() and old.stem.lower() == "cover" and old.suffix.lower() in IMAGE_SUFFIXES:
+            old.unlink()
+    target = root / f"cover{image.suffix.lower()}"
+    shutil.copy2(image, target)
+    return target.name
+
+
+def key_art_asset(ws_dir: Path, title: str, pitch: str) -> str:
+    """The project's key-art asset, made on first use with a prompt from the project's pitch."""
+    root = ws_dir.resolve()
+    for doc in sorted(root.rglob("*.md")):
+        if TRASH_DIR in doc.parts:
+            continue
+        try:
+            meta, _, _ = split_frontmatter(doc.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if meta.get("cover") and meta.get("kind"):
+            return _ws_rel(ws_dir, doc)
+    prompt = (f"Key art for the game \"{title}\". {pitch.strip()} A wide cinematic cover image: the hero in the "
+              "middle of their world at its most exciting moment, dramatic lighting, strong silhouette, no text, no logo.")
+    meta = {"kind": "environment", "prompt": re.sub(r"\s+", " ", prompt).strip(), "aspect": "16:9", "cover": True}
+    body = f"# Key art\n\nThe cover of {title}: shown on the project page and the projects overview. Pick another winner to change it.\n"
+    (root / KEY_ART_FILE).write_text(serialize_frontmatter(meta, body), encoding="utf-8")
+    return KEY_ART_FILE
+
+
+# ---------- batch & history ----------
+
+def assets_under(ws_dir: Path, folder: str = "") -> list[str]:
+    """Every asset document in a folder and below it, in the order the overview shows them."""
+    from forge.overview import _visible
+
+    root = ws_dir.resolve()
+    base = resolve_rel(ws_dir, folder) if folder else root
+    found = []
+    for doc in sorted(base.rglob("*.md")):
+        parts = doc.relative_to(root).parts
+        if PILLAR_DIR in parts or not all(_visible(Path(part)) for part in parts):
+            continue
+        try:
+            meta, _, _ = read_frontmatter(doc)
+        except (OSError, ValueError):
+            continue
+        if is_asset(meta):
+            found.append(_ws_rel(ws_dir, doc))
+    return found
+
+
+def missing_assets(ws_dir: Path, folder: str = "") -> list[str]:
+    """Assets with nothing to pick from yet: no winner and no candidates or takes."""
+    missing = []
+    for rel in assets_under(ws_dir, folder):
+        asset = describe_asset(ws_dir, rel)
+        if asset["kind"] == "kit":
+            continue  # built for free on its page, never generated
+        made = asset["outputs"]["audio"] if asset["kind"] in AUDIO_KINDS else asset["outputs"]["candidates"]
+        described = asset["prompt"].strip() or re.sub(r"^#.*$", "", asset["body"], flags=re.M).strip()  # a title alone says too little
+        if not asset["winner"] and not made and described:
+            missing.append(rel)
+    return missing
+
+
+def output_history(ws_dir: Path, rel: str) -> dict[str, dict[str, Any]]:
+    """What each output of an asset was made from (prompt, model, cost, time), read from the vault records."""
+    asset_path = resolve_rel(ws_dir, rel)
+    records = Layout.of_art(ws_dir).history / Path(_ws_rel(ws_dir, asset_path)).with_suffix("")
+    history: dict[str, dict[str, Any]] = {}
+    if not records.is_dir():
+        return history
+    for record in records.glob("*/*.json"):
+        try:
+            data = json.loads(record.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if data.get("file"):
+            history[data["file"]] = {k: data.get(k) for k in ("action", "prompt", "asset_prompt", "model", "provider", "cost_usd", "created_at")}
+    return history
+
+
+def remove_output(ws_dir: Path, rel: str, output: str) -> dict[str, Any]:
+    """Move one output of an asset to `.trash/`: an image, or a model with all its formats and thumbnail."""
+    path, meta, body = read_asset(ws_dir, rel)
+    target = resolve_rel(ws_dir, output)
+    base = output_dir(path).resolve()
+    if target.parent.parent != base or target.parent.name not in OUTPUT_KINDS or not target.is_file():
+        raise FileNotFoundError(f"'{output}' is not an output of this asset.")
+    if target.suffix.lower() in MODEL_SUFFIXES or target.suffix.lower() in EXTRA_MODEL_SUFFIXES:
+        siblings = [p for p in target.parent.iterdir() if p.is_file() and p.stem in (target.stem, f"{target.stem}_thumb")
+                    and (p.suffix.lower() in MODEL_SUFFIXES or p.suffix.lower() in EXTRA_MODEL_SUFFIXES or p.stem.endswith("_thumb"))]
+    else:
+        siblings = [target]
+    removed = []
+    for file in siblings:
+        original = _ws_rel(ws_dir, file)
+        moved = move_to_trash(ws_dir, file)
+        if moved:
+            removed.append({"from": original, "trash": moved})
+    was_winner = bool(meta.get("winner")) and resolve_rel(ws_dir, str(meta["winner"])) == target
+    if was_winner:
+        meta.pop("winner", None)
+        path.write_text(serialize_frontmatter(meta, body), encoding="utf-8")
+    result = describe_asset(ws_dir, rel)
+    result["removed"] = removed
+    result["was_winner"] = was_winner
+    return result
+
+
+def restore_outputs(ws_dir: Path, moves: list[dict[str, Any]]) -> list[str]:
+    """Undo `remove_output`: move files from `.trash/` back where they were, never over an existing file."""
+    trash = (ws_dir / TRASH_DIR).resolve()
+    restored = []
+    for move in moves:
+        source = resolve_rel(ws_dir, str(move.get("trash") or ""))
+        target = resolve_rel(ws_dir, str(move.get("from") or ""))
+        if source.parent != trash or not source.is_file() or target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(target)
+        restored.append(_ws_rel(ws_dir, target))
+    return restored
+
+
+# ---------- building the request ----------
+
+def mesh_settings(cfg: Any, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Make 3D settings: the config defaults, with valid values from the send sheet on top."""
+    o = dict(overrides or {})
+
+    def pick(key: str, default: Any) -> Any:
+        value = o.get(key, default)
+        return value if value in MESH_CHOICES[key] else default
+
+    try:
+        polycount = int(o.get("target_polycount") or cfg.mesh_target_polycount)
+    except (TypeError, ValueError):
+        polycount = cfg.mesh_target_polycount
+    formats = [f for f in (o.get("target_formats") or cfg.mesh_target_formats) if f in MESH_CHOICES["target_formats"]]
+    ai_model = pick("ai_model", cfg.default_3d_model if cfg.default_3d_model in MESH_CHOICES["ai_model"] else "meshy-7.1")
+    model_type = "smart-topology" if ai_model in ("meshy-t2", "meshy-t2.5") else pick("model_type", cfg.mesh_model_type)
+    texture = bool(o.get("should_texture", cfg.mesh_should_texture))
+    return {
+        "ai_model": ai_model,
+        "model_type": model_type,
+        "target_polycount": max(100, min(300000, polycount)),
+        "should_remesh": bool(o.get("should_remesh", cfg.mesh_should_remesh)),
+        "topology": pick("topology", cfg.mesh_topology),
+        "should_texture": texture,
+        "enable_pbr": texture and bool(o.get("enable_pbr", cfg.mesh_enable_pbr)),
+        "texture_resolution": pick("texture_resolution", cfg.mesh_texture_resolution),
+        "pose_mode": pick("pose_mode", cfg.mesh_pose_mode),
+        "origin_at": pick("origin_at", cfg.mesh_origin_at),
+        "target_formats": ["glb"] + [f for f in dict.fromkeys(formats) if f != "glb"],  # GLB is always made
+    }
+
+
+def default_source(ws_dir: Path, asset: dict[str, Any]) -> str:
+    if asset["winner"]:
+        return asset["winner"]
+    for kind in ("candidates", "variants", "edits"):
+        images = [o for o in asset["outputs"][kind] if o["type"] == "image"]
+        if images:
+            return images[0]["path"]
+    return ""
+
+
+def build_request(ws_dir: Path, rel: str, action: str, *, source: str = "", instruction: str = "", model: str = "") -> dict[str, Any]:
+    """Everything that will be sent for an action, so the UI can show it before anything runs."""
+    if action not in ACTIONS:
+        raise ValueError(f"Unknown action '{action}'.")
+    asset = describe_asset(ws_dir, rel)
+    cfg = load_config()
+    if asset["kind"] == "kit":
+        raise ValueError("A modular kit isn't generated: press Build kit on its page.")
+    if asset["kind"] in AUDIO_KINDS:
+        return _audio_request(asset, action, model)
+    if action in ("rig", "animate"):
+        return _rig_request(ws_dir, asset, action, source)
+    source = source or (default_source(ws_dir, asset) if action != "candidates" else "")
+    if action != "candidates" and not source:
+        raise ValueError("Generate candidates and pick a winner first.")
+    if source:
+        resolved = resolve_rel(ws_dir, source)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"No image '{source}'.")
+
+    if action == "make_3d":
+        use_tripo = cfg.default_3d_provider == "tripo" and not cfg.default_3d_service_model
+        references = [{"path": source, "source": "Winner image", "role": "source"}] \
+            + [{"path": view["path"], "source": "Turnaround view", "role": "view"} for view in asset["outputs"]["views"] if view["type"] == "image"][:3]
+        if use_tripo:
+            settings = tripo.settings_from_config(cfg)
+            return {
+                "action": action, "asset": asset["path"], "prompt": "", "parts": [], "references": references, "engine": "tripo",
+                "model": f"tripo:{settings['model']}", "settings": settings, "choices": tripo.TRIPO_CHOICES, "count": 1,
+            }
+        return {
+            "action": action,
+            "asset": asset["path"],
+            "prompt": "",
+            "parts": [],
+            "references": references,
+            "engine": "meshy",
+            "model": cfg.default_3d_service_model or f"{cfg.default_3d_provider}:{cfg.default_3d_model}",
+            "settings": mesh_settings(cfg),
+            "choices": {**MESH_CHOICES, "polycount_presets": list(POLYCOUNT_PRESETS)},
+            "count": 1,
+        }
+
+    if action == "prop_sheet":
+        wanted = instruction.strip()
+        parts = [{"source": "Prop sheet", "text": prop_sheet_rule(project_dimension(ws_dir)), "role": "rule"}]
+        if wanted:
+            parts.insert(0, {"source": "Props to draw", "text": f"Props to include: {wanted}.", "role": "subject"})
+        return {
+            "action": action,
+            "asset": asset["path"],
+            "prompt": compose_prompt([part["text"] for part in parts], cfg, "1:1"),
+            "parts": parts,
+            "bible": asset["text_pillars"],
+            "use_bible": True,
+            "references": [{"path": source, "source": "Level image", "role": "source"}],
+            "model": model or default_image_model(cfg),
+            "settings": {"aspect_ratio": "1:1", "transparent_background": False},
+            "count": 1,
+        }
+
+    if action == "trim_sheet":
+        parts = [{"source": "Trim sheet", "text": TRIM_SHEET_RULE, "role": "rule"}]
+        return {
+            "action": action,
+            "asset": asset["path"],
+            "prompt": compose_prompt([TRIM_SHEET_RULE], cfg, "1:1"),
+            "parts": parts,
+            "bible": asset["text_pillars"],
+            "use_bible": True,
+            "references": [{"path": source, "source": "Level image", "role": "source"}],
+            "model": model or default_image_model(cfg),
+            "settings": {"aspect_ratio": "1:1", "transparent_background": False},
+            "count": 1,
+        }
+
+    if action == "views":
+        subject = VIEWS_RULE
+        parts = [{"source": "Turnaround", "text": subject, "role": "rule"}]
+        return {
+            "action": action,
+            "asset": asset["path"],
+            "prompt": compose_prompt([subject], cfg),
+            "parts": parts,
+            "bible": [],
+            "use_bible": False,
+            "references": [{"path": source, "source": "Source image", "role": "source"}],
+            "model": model or default_image_model(cfg),
+            "settings": {"views": ", ".join(TURNAROUND_VIEWS[:2])},
+            "count": 2,
+        }
+    subject = instruction.strip() if action in ("variant", "edit") else asset["prompt"].strip()
+    if not subject and action == "candidates":
+        subject = asset["body"].strip()[:1200]
+    # The style bible is kept apart: it is switched on or off per run and added in front at send time.
+    parts = [{"source": "Instruction" if action != "candidates" else "Asset prompt", "text": subject, "role": "subject"}]
+    parts += [{"source": f"Style · {rule['source']}", "text": rule["text"], "role": "style"} for rule in asset["style_rules"]]
+    references: list[dict[str, str]] = []
+    if source:
+        references.append({"path": source, "source": "Source image", "role": "source"})
+    strength = pillar_strength(asset["meta"])
+    if action == "candidates" and strength != "off":
+        # Pillars only steer new images; a variant or edit works from its source image alone.
+        pillars = asset["pillars"][-2:] if strength == "light" else asset["pillars"]  # the closest folder's come last
+        references += [{**pillar, "role": "pillar"} for pillar in pillars]
+    rule = {"candidates": {"light": PILLAR_RULE_LIGHT, "strong": PILLAR_RULE_STRONG}.get(strength, PILLAR_RULE), "variant": VARIANT_RULE, "edit": EDIT_RULE}[action]
+    if asset["kind"] == "material" and action in ("candidates", "variant"):
+        parts.append({"source": "Material", "text": MATERIAL_RULE, "role": "rule"})
+    if action != "candidates" or any(ref["role"] == "pillar" for ref in references):
+        parts.append({"source": "Reference rule", "text": rule, "role": "rule"})
+    aspect = asset_aspect(asset, cfg) if action == "candidates" else cfg.image_aspect_ratio
+    prompt = compose_prompt([part["text"] for part in parts], cfg, aspect)
+    return {
+        "action": action,
+        "asset": asset["path"],
+        "prompt": prompt,
+        "parts": parts,
+        "bible": asset["text_pillars"],
+        "use_bible": True,
+        "references": references[:MAX_REFERENCES],
+        "model": model or default_image_model(cfg),
+        "settings": {"aspect_ratio": aspect, "transparent_background": cutout_background(asset, cfg)},
+        "pillar_strength": strength,
+        "count": max(1, min(int(getattr(cfg, "image_count", 1) or 1), 4)),  # Settings → Generators; changeable per run
+    }
+
+
+def kind_defaults(cfg: Any) -> dict[str, dict[str, str]]:
+    """The built-in shape and background per kind, with what the user set in Settings on top."""
+    saved = getattr(cfg, "kind_defaults", None) or {}
+    return {kind: {**d, **{k: v for k, v in (saved.get(kind) or {}).items() if k in d and v}} for kind, d in KIND_DEFAULTS.items()}
+
+
+def asset_aspect(asset: dict[str, Any], cfg: Any) -> str:
+    """The asset's own framing, else the one set for its kind, else the general default."""
+    return str(asset["meta"].get("aspect") or kind_defaults(cfg).get(asset["kind"], {}).get("aspect") or cfg.image_aspect_ratio)
+
+
+def cutout_background(asset: dict[str, Any], cfg: Any) -> bool:
+    """Whether new images are cut out: the asset's `background:`, else its kind's, else the general default.
+    The key art is always a whole picture."""
+    if asset["meta"].get("cover"):
+        return False
+    forced = getattr(cfg, "image_background_mode", "auto")
+    own = str(asset["meta"].get("background") or "") or (forced if forced in ("cutout", "scene") else "") \
+        or kind_defaults(cfg).get(asset["kind"], {}).get("background")
+    return own == "cutout" if own in ("cutout", "scene") else bool(cfg.image_remove_bg)
+
+
+def pillar_strength(meta: dict[str, Any]) -> str:
+    value = str(meta.get("pillars") or "normal").lower()
+    return value if value in PILLAR_STRENGTHS else "normal"
+
+
+def list_audio_models() -> list[dict[str, Any]]:
+    from forge import services
+
+    cfg = load_config()
+    signed_in = set(services.connected())
+    # Demo mode never spends: a signed-in service has no demo of its own, so it only counts outside demo mode.
+    return [{**m, "available": m["service"] in signed_in and not cfg.demo_mode if "service" in m else bool(cfg.get_key(m["key"]))}
+            for m in AUDIO_MODELS]
+
+
+_LOOP_WORDS = re.compile(r"\b(ambien\w*|loop\w*|drone|hum(ming)?|idle|engine|wind|rain|storm|waterfall|crackl\w*|atmospher\w*|background|rumbl\w*|bed|machinery|reactor|swamp|cave|dungeon|wash)\b", re.I)
+_ONE_SHOT_WORDS = re.compile(r"\b(hit|impact|slam|click|pop|snap|clang|thud|stab|swing|swish|whoosh|splash|footsteps?|step|bang|shot|jump|land\w*|pickup|coin|blip|beep|bonk|punch|kick|slash|clink|knock|ping)\b", re.I)
+_STINGER_WORDS = re.compile(r"\b(stinger|jingle|fanfare|victory|defeat|game ?over|level ?up|sting|win|lose|cue)\b", re.I)
+_SECONDS = re.compile(r"\b(\d{1,3})\s*(?:s|sec|secs|second|seconds)\b", re.I)
+
+
+def infer_sound_settings(kind: str, name: str, text: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A sensible length and loop for a sound, decided from what it is, so Generate missing never runs on "auto".
+
+    The asset's own `duration:` / `loop:` (set when the draft was made) win; then a length written in the prompt
+    ("10 seconds"); then the words: ambience and engines loop for ~15 s, one-shots (hits, clicks, steps) are a
+    second or two, stingers and fanfares a few seconds, music a 30 s loop unless it is a jingle."""
+    meta = meta or {}
+    words = f"{name} {text}"
+    stinger = bool(_STINGER_WORDS.search(words))
+    one_shot = bool(_ONE_SHOT_WORDS.search(words))
+    loop = bool(_LOOP_WORDS.search(words)) and not stinger and not (one_shot and kind == "sfx" and not re.search(r"\b(loop\w*|ambien\w*)\b", words, re.I))
+    if kind == "music":
+        loop = not stinger
+        duration = 8 if stinger else 30
+    elif loop:
+        duration = 15
+    elif stinger:
+        duration = 4
+    elif one_shot:
+        duration = 1 if re.search(r"\b(click|pop|blip|beep|ping|clink|snap|knock|step|footsteps?|coin|pickup)\b", words, re.I) else 2
+    else:
+        duration = 3
+    written = _SECONDS.search(text)
+    if written:
+        duration = int(written.group(1))
+    if meta.get("duration") not in (None, ""):
+        try:
+            duration = float(meta["duration"])
+        except (TypeError, ValueError):
+            pass
+    if "loop" in meta:
+        loop = str(meta["loop"]).strip().lower() in ("1", "true", "yes", "on")
+    duration = max(0.5, min(float(duration), 30.0 if kind == "sfx" else 180.0))
+    return {"duration": int(duration) if float(duration).is_integer() else duration, "loop": loop}
+
+
+def _audio_request(asset: dict[str, Any], action: str, model: str) -> dict[str, Any]:
+    kind = asset["kind"]
+    if action != "candidates":
+        raise ValueError("Sound assets are made with Generate; variants, edits and 3D are for images.")
+    text = asset["prompt"].strip() or asset["body"].strip()[:600]
+    choices = [m for m in list_audio_models() if kind in m["kinds"]]
+    picked = (next((m for m in choices if m["id"] == model), None) or next((m for m in choices if m["available"]), None)
+              or next((m for m in choices if "service" not in m), choices[0]))
+    name = Path(asset["path"]).stem.replace("-", " ").replace("_", " ")
+    settings: dict[str, Any] = {**infer_sound_settings(kind, name, text, asset["meta"]), "prompt_influence": 0.3} if kind == "sfx" else {}
+    if kind == "voice":
+        settings = {"voice_id": str(asset["meta"].get("voice") or ""), "model_id": "eleven_multilingual_v2"}
+    if kind == "music":
+        settings = infer_sound_settings(kind, name, text, asset["meta"])
+    return {
+        "action": action,
+        "asset": asset["path"],
+        "audio": True,
+        "kind": kind,
+        "prompt": text,
+        "parts": [{"source": "Line to speak" if kind == "voice" else "Asset prompt", "text": text, "role": "subject"}],
+        "references": [],
+        "model": picked["id"],
+        "models": choices,
+        "settings": settings,
+        "count": 2 if kind == "sfx" else 1,
+    }
+
+
+def save_audio(ws_dir: Path, rel: str, filename: str, data: bytes) -> str:
+    """An audio file dropped on a sound asset becomes a take in <asset>/audio/ (and the winner if there is none)."""
+    asset_path, meta, _ = read_asset(ws_dir, rel)
+    suffix = Path(filename).suffix.lower()
+    if suffix not in AUDIO_SUFFIXES:
+        raise ValueError("Drop an MP3, WAV, OGG or FLAC file.")
+    folder = output_dir(asset_path) / "audio"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", Path(filename).stem).strip("-") or "sound"
+    target = folder / f"{stem}{suffix}"
+    n = 2
+    while target.exists():
+        target, n = folder / f"{stem}-{n}{suffix}", n + 1
+    target.write_bytes(data)
+    rel_target = _ws_rel(ws_dir, target)
+    if not meta.get("winner"):
+        update_asset(ws_dir, rel, {"winner": rel_target})
+    return rel_target
+
+
+def _rig_request(ws_dir: Path, asset: dict[str, Any], action: str, source: str) -> dict[str, Any]:
+    from forge import game_tools
+
+    models = [o["path"] for o in asset["outputs"]["3d"] if o["path"].lower().endswith(".glb")]
+    if action == "rig":
+        model = source if source.lower().endswith(".glb") else (models[0] if models else "")
+        if not model:
+            raise ValueError("Make or drop a GLB model first, then rig it.")
+        refs = [{"path": model, "source": "3D model", "role": "source"}]
+        thumb = next((o.get("thumb") for o in asset["outputs"]["3d"] if o["path"] == model), "")
+        engine = game_tools.rig_engine()
+        engines = [
+            {"id": e, "credits": tripo.CREDITS["rig"] if e == "tripo" else game_tools.RIG_CREDITS,
+             "cost_usd": tripo.CREDITS["rig"] * tripo.USD_PER_CREDIT if e == "tripo" else game_tools.RIG_CREDITS / 100}
+            for e in game_tools.rig_engines()
+        ]
+        glbs = []
+        for o in asset["outputs"]["3d"]:
+            if not o["path"].lower().endswith(".glb"):
+                continue
+            file = ws_dir / o["path"]
+            glbs.append({"path": o["path"], "thumb": o.get("thumb") or "",
+                         "triangles": game_tools.glb_triangles(file) if file.is_file() else None,
+                         "mb": round(file.stat().st_size / 1048576, 1) if file.is_file() else None})
+        own = next((e for e in engines if e["id"] == engine), engines[0])
+        return {
+            "action": action, "asset": asset["path"], "prompt": "", "parts": [], "references": refs, "thumb": thumb or "", "engine": engine,
+            "model": f"{engine}:rigging", "count": 1, "credits": own["credits"], "cost_usd": own["cost_usd"],
+            "settings": {"engine": engine, "height_meters": 1.7, "rig_type": "biped", "spec": "tripo"},
+            "choices": {"rig_type": list(tripo.RIG_TYPES), "spec": list(tripo.RIG_SPECS)},
+            "engines": engines, "models": glbs, "max_triangles": game_tools.RIG_MAX_TRIANGLES,
+        }
+    if not asset["meta"].get("rig_task"):
+        raise ValueError("Rig the 3D model first, then add animations.")
+    engine = asset["meta"].get("rig_provider") or "meshy"  # animations must come from whoever made the rig
+    return {
+        "action": action, "asset": asset["path"], "prompt": "", "parts": [], "references": [], "engine": engine,
+        "model": f"{engine}:animation", "settings": {"in_place": False} if engine == "tripo" else {"fps": 30}, "count": 1, "action_ids": [], "names": [],
+        "credits_each": tripo.CREDITS["retarget"] if engine == "tripo" else game_tools.ANIMATION_CREDITS,
+        "credit_unit": "Tripo" if engine == "tripo" else "Meshy", "cost_usd": 0.0, "rig_model": asset["meta"].get("rig_model") or "",
+    }
+
+
+def prompt_with_bible(ws_dir: Path, request: dict[str, Any]) -> str:
+    """The prompt as sent: subject first, then the style bible (read fresh from disk), then the reference rule.
+
+    The bible is left out when it is switched off.
+    """
+    prompt = str(request.get("prompt") or "").strip()
+    if request.get("use_bible", True) is False:
+        return prompt
+    asset_path = resolve_rel(ws_dir, str(request.get("asset") or ""))
+    if "Style bible:" in prompt:
+        return prompt  # the send screen already put it in the final prompt
+    texts = [t["text"].strip() for t in collect_text_pillars(ws_dir, asset_path)]
+    if not texts or not prompt:
+        return prompt
+    bible = "Style bible:\n" + "\n\n".join(texts)
+    for rule in (PILLAR_RULE_STRONG, PILLAR_RULE, PILLAR_RULE_LIGHT, VARIANT_RULE, EDIT_RULE):
+        at = prompt.find(rule)
+        if at >= 0:
+            return "\n\n".join(part for part in (prompt[:at].strip(), bible, prompt[at:].strip()) if part)
+    return f"{prompt}\n\n{bible}"
+
+
+def copy_pack(ws_dir: Path, rel: str) -> dict[str, Any]:
+    """What "Copy prompt" and "Copy images" take for an asset: the full prompt a new image is sent with
+    (asset prompt, style rules, style bible, reference rule), and the pillar images that go with it."""
+    request = build_request(ws_dir, rel, "candidates")
+    images = [ref["path"] for ref in request.get("references") or [] if ref.get("role") == "pillar"]
+    prompt = prompt_with_bible(ws_dir, request) if not request.get("audio") else str(request.get("prompt") or "")
+    return {"prompt": prompt, "images": images}
+
+
+def _windows_clipboard(script: str, value: str) -> None:
+    """Run a Set-Clipboard script; the value travels in an environment variable, never parsed as PowerShell."""
+    import os
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        raise ValueError("The clipboard is only reachable from the server on Windows.")
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script],
+                   env={**os.environ, "TESSERA_CLIP": value}, check=True, timeout=20,
+                   capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def copy_files_to_clipboard(ws_dir: Path, rels: list[str]) -> int:
+    """Put files on the Windows clipboard as a file list, so one paste drops them all (chat apps, Explorer)."""
+    files = [str(resolve_rel(ws_dir, rel)) for rel in rels]
+    files = [f for f in files if Path(f).is_file()]
+    if not files:
+        raise ValueError("No pillar images apply to this asset.")
+    _windows_clipboard("Set-Clipboard -LiteralPath ($env:TESSERA_CLIP -split [char]10)", "\n".join(files))
+    return len(files)
+
+
+def copy_text_to_clipboard(text: str) -> None:
+    """The text on the Windows clipboard, for when the browser refuses to write it."""
+    _windows_clipboard("Set-Clipboard -Value $env:TESSERA_CLIP", text)
+
+
+def compose_prompt(texts: list[str], cfg: Any | None = None, aspect: str = "") -> str:
+    cfg = cfg or load_config()
+    body = "\n\n".join(text.strip() for text in texts if text and text.strip())
+    return finalize_generation_prompt(body, pose_mode=cfg.image_pose_mode, aspect_ratio=aspect or cfg.image_aspect_ratio)
+
+
+# ---------- running ----------
+
+def _link_or_copy(src: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
+async def _post_cut(store: Any, stored: Any) -> None:
+    """Remove the background of a finished image with the cutter chosen in New art (skipped if it already has one)."""
+    from PIL import Image
+
+    from forge.local_ai.cutout import cut_out
+
+    src = store.resolve_safe_path(stored.file_path)
+    if not src.is_file():
+        return
+    with Image.open(src) as img:
+        if img.mode in ("RGBA", "LA") and img.getchannel("A").getextrema()[0] < 16:
+            return  # already transparent
+        if src.suffix.lower() != ".png":
+            png = src.with_suffix(".png")
+            img.save(png, format="PNG")
+            stored.file_path = str(Path(stored.file_path).with_suffix(".png")).replace("\\", "/")
+            src = png
+    await cut_out(src)
+
+
+def _record(actions: Any, project: str, ws_dir: Path, asset_rel: str, action: str, stored: Any, request: dict[str, Any], name: str) -> str:
+    """Copy one generated file next to the asset and into the vault; return its workspace path."""
+    store = actions.get_store(project)
+    asset_path = resolve_rel(ws_dir, asset_rel)
+    src = store.resolve_safe_path(stored.file_path)
+    kind_folder = "audio" if request.get("audio") else ACTION_FOLDER[action]
+    folder = output_dir(asset_path) / kind_folder
+    target = folder / f"{name}{src.suffix.lower()}"
+    _link_or_copy(src, target)
+    if stored.type == AssetType.MESH and stored.thumbnail_path:
+        thumb = store.resolve_safe_path(stored.thumbnail_path)
+        if thumb.is_file() and thumb != src:
+            _link_or_copy(thumb, folder / f"{name}_thumb.png")
+    extras: list[Path] = []
+    if stored.type == AssetType.MESH:
+        for fmt, rel in (stored.extra_files or {}).items():
+            extra = store.resolve_safe_path(rel)
+            if extra.is_file() and extra.suffix.lower() == f".{fmt}":
+                _link_or_copy(extra, folder / f"{name}{extra.suffix.lower()}")
+                extras.append(extra)
+
+    vault_dir = store.layout.history / Path(asset_rel).with_suffix("") / kind_folder
+    _link_or_copy(src, vault_dir / target.name)
+    for extra in extras:
+        _link_or_copy(extra, vault_dir / f"{name}{extra.suffix.lower()}")
+    sidecar = {
+        "asset": asset_rel,
+        "action": action,
+        "file": _ws_rel(ws_dir, target),
+        "store_asset_id": stored.id,
+        "prompt": request.get("prompt", ""),
+        "asset_prompt": request.get("asset_prompt", ""),
+        "references": [ref["path"] for ref in request.get("references", [])],
+        "model": stored.model,
+        "provider": stored.provider,
+        "cost_usd": stored.cost_usd,
+        "settings": request.get("settings") or {},
+        "formats": sorted({src.suffix.lower().lstrip(".")} | {e.suffix.lower().lstrip(".") for e in extras}),
+        "created_at": time.time(),
+    }
+    (vault_dir / f"{target.stem}.json").write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
+    return sidecar["file"]
+
+
+def _store_id_for(store: Any, ws_dir: Path, asset_rel: str, file_rel: str) -> str | None:
+    """Find the vault sidecar of a generated file so new outputs keep their lineage."""
+    file_path = Path(file_rel)
+    kind = file_path.parent.name
+    sidecar = store.layout.history / Path(asset_rel).with_suffix("") / kind / f"{file_path.stem}.json"
+    try:
+        return json.loads(sidecar.read_text(encoding="utf-8")).get("store_asset_id")
+    except (OSError, ValueError):
+        return None
+
+
+def demo_safe_request(request: dict[str, Any], demo_mode: bool) -> dict[str, Any]:
+    """Demo mode never spends: a signed-in service is a real account, so its requests go to the demo generators instead."""
+    model = str(request.get("model") or "")
+    if not demo_mode or not model.startswith("svc:"):
+        return request
+    if request.get("audio"):
+        mode = model.rsplit("/", 1)[-1]
+        return {**request, "model": "stability_audio:music" if mode == "music" else f"elevenlabs_audio:{mode}"}
+    return {**request, "model": ""}
+
+
+async def run_action(actions: Any, project: str, request: dict[str, Any]) -> list[str]:
+    """Run a request (as built by ``build_request`` and possibly edited by the user)."""
+    action = request.get("action")
+    if action not in ACTIONS:
+        raise ValueError(f"Unknown action '{action}'.")
+    ws_dir = actions.get_workspace(project).ws_dir
+    asset_rel = str(request.get("asset") or "")
+    asset_path, meta, _ = read_asset(ws_dir, asset_rel)
+    store = actions.get_store(project)
+    executor = actions.get_executor(project)
+    bible = store.get_bible()
+    cfg = load_config()
+    request = demo_safe_request(request, cfg.demo_mode)
+    refs = [resolve_rel(ws_dir, ref["path"]) for ref in request.get("references") or [] if ref.get("path")]
+    refs = [ref for ref in refs if ref.is_file()][:MAX_REFERENCES]
+    # Sound effects come in pools (five footsteps), so audio may ask for a few more takes.
+    count = max(1, min(int(request.get("count") or 1), 6 if request.get("audio") else 4))
+    # Each output remembers the asset prompt it came from, so an older prompt can be brought back.
+    request = {**request, "asset_prompt": str(meta.get("prompt") or "")}
+    title = str(meta.get("title") or asset_path.stem.replace("-", " ").replace("_", " ").title())
+    sources = [ref["path"] for ref in request.get("references") or [] if ref.get("role") == "source"]
+    parent_ids = [pid for src in sources[:1] if (pid := _store_id_for(store, ws_dir, asset_rel, src))]
+    tracker = [0.0]
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    created: list[str] = []
+
+    if action in ("rig", "animate"):
+        from forge import game_tools
+
+        if cfg.demo_mode:
+            # The real rig runs on a Meshy or Tripo account. Demo mode never spends: it rigs a stand-in biped instead.
+            if action == "rig":
+                return game_tools.demo_rig(ws_dir, asset_rel)
+            return game_tools.demo_animate(ws_dir, asset_rel, list(request.get("names") or []))
+        if action == "rig":
+            model = next((ref["path"] for ref in request.get("references") or [] if ref.get("role") == "source"), "")
+            settings = request.get("settings") or {}
+            return await game_tools.rig_model(ws_dir, asset_rel, model, float(settings.get("height_meters") or 1.7), settings)
+        settings = request.get("settings") or {}
+        return await game_tools.animate(ws_dir, asset_rel, list(request.get("action_ids") or []), list(request.get("names") or []),
+                                        int(settings.get("fps") or 30), bool(settings.get("in_place")))
+
+    if request.get("audio"):
+        model_id = str(request.get("model") or "")
+        if model_id.startswith("svc:"):
+            provider_id, mode = "service", model_id.rsplit("/", 1)[-1]
+        else:
+            provider_id, _, mode = model_id.partition(":")
+        capability = AUDIO_CAPABILITY.get(mode)
+        if not provider_id or capability is None:
+            raise ValueError(f"Unknown sound model '{model_id}'.")
+        picked = next((m for m in list_audio_models() if m["id"] == model_id), None)
+        if picked and not picked["available"] and not cfg.demo_mode:
+            # Without a key the provider falls back to demo mode and saves a silent file: say so instead.
+            how = f"sign in to {picked['service'].title()}" if "service" in picked else f"add a {picked['key'].title()} key"
+            raise ValueError(f"{picked['label']} isn't set up: {how} in Settings → Generators, or pick another generator.")
+        text = str(request.get("prompt") or "").strip()
+        if not text:
+            raise ValueError("Describe the sound first (for a voice: the line to speak).")
+        settings = {k: v for k, v in (request.get("settings") or {}).items() if v not in ("", None)}
+        if not settings.get("duration"):
+            settings.pop("duration", None)  # let the provider pick a fitting length
+        if provider_id == "service":
+            settings["model"] = model_id
+        elif mode == "tts" and not settings.get("voice_id"):
+            from forge.providers.elevenlabs_audio import list_voices
+
+            settings["voice_id"] = next((v["id"] for v in await list_voices()), "")  # any voice beats an error
+        for index in range(count):
+            stored = await executor._generate_single_asset(
+                provider_id=provider_id,
+                capability=capability,
+                name=f"{title} (sound {index + 1})",
+                asset_type=AssetType.AUDIO,
+                verb="generate_audio",
+                recipe_id="audio",
+                prompt_raw=text,
+                prompt_full=text,
+                parent_ids=[],
+                reference_files=[],
+                params=dict(settings),
+                tags=["audio", str(request.get("kind") or ""), f"asset:{asset_rel}"],
+                force_uncached=True,
+                bible=bible,
+                run_spent_tracker=tracker,
+            )
+            created.append(_record(actions, project, ws_dir, asset_rel, action, stored, request, f"{asset_path.stem}-{stamp}-{index + 1}"))
+        if created and not meta.get("winner"):
+            update_asset(ws_dir, asset_rel, {"winner": created[0]})
+        return created
+
+    if action == "make_3d":
+        if not refs:
+            raise ValueError("Make 3D needs a source image.")
+        service_model = str(request.get("model") or "")
+        provider_3d = "service" if service_model.startswith("svc:") else cfg.default_3d_provider or "meshy"
+        if service_model.startswith("svc:"):
+            mesh_params: dict[str, Any] = {"model": service_model}
+        elif provider_3d == "tripo":
+            mesh_params = tripo.settings_from_config(cfg, request.get("settings"))
+        else:
+            mesh_params = mesh_settings(cfg, request.get("settings"))
+        stored = await executor._generate_single_asset(
+            # A signed-in service's 3D model when one was picked, else the 3D provider from Settings.
+            provider_id=provider_3d,
+            # Several pictures (winner + turnaround views) give Meshy the back and sides too.
+            capability=ProviderCapability.MULTI_IMAGE_TO_3D if len(refs) > 1 else ProviderCapability.IMAGE_TO_3D,
+            name=f"{title} (3D)",
+            asset_type=AssetType.MESH,
+            verb="make_3d",
+            recipe_id="make_3d",
+            prompt_raw=title,
+            prompt_full=title,
+            parent_ids=parent_ids,
+            reference_files=refs[:4],
+            params=mesh_params,
+            tags=["3d", f"asset:{asset_rel}"],
+            force_uncached=True,
+            bible=bible,
+            run_spent_tracker=tracker,
+        )
+        created.append(_record(actions, project, ws_dir, asset_rel, action, stored, request, f"{asset_path.stem}-3d-{stamp}"))
+        return created
+
+    if not str(request.get("prompt") or "").strip():
+        raise ValueError("The prompt is empty.")
+    prompt = prompt_with_bible(ws_dir, request)
+    request = {**request, "prompt": prompt}
+    # The sheet's own aspect ratio and background win over the Settings defaults.
+    sheet = request.get("settings") or {}
+    params = {"use_reference_image": bool(refs), "aspect_ratio": str(sheet.get("aspect_ratio") or cfg.image_aspect_ratio),
+              "transparent": bool(sheet.get("transparent_background", cfg.image_remove_bg))}
+    if request.get("model"):
+        params["model"] = str(request["model"])
+    if sources and str(params.get("model") or cfg.default_image_model).startswith("local:"):
+        # Local models can't read references; a variant or edit still starts from its source picture.
+        source = resolve_rel(ws_dir, sources[0])
+        if source.is_file():
+            params["source_image"] = str(source)
+    provider_id = resolve_image_provider("gemini", params)
+    from forge.local_ai.cutout import has_own_cutout
+
+    maker = str(params.get("model") or cfg.default_image_model or "")
+    # Cut out afterwards when the maker can't, or when New art says to use this PC's cutter instead of the maker's own.
+    post_cut = params["transparent"] and not maker.startswith("local:") and not (has_own_cutout(maker) and cfg.cutout_prefer_own)
+    if post_cut and has_own_cutout(maker):
+        params["transparent"] = False
+    template = prompt
+    for index in range(count):
+        if action == "views":
+            prompt = template.replace("{view}", TURNAROUND_VIEWS[index % len(TURNAROUND_VIEWS)])
+            request = {**request, "prompt": prompt}
+        stored = await executor._generate_single_asset(
+            provider_id=provider_id,
+            capability=ProviderCapability.IMAGE_EDIT if refs else ProviderCapability.TEXT_TO_IMAGE,
+            name=f"{title} ({action} {index + 1})",
+            asset_type=AssetType.IMAGE,
+            verb="generate" if action == "candidates" else ("variant" if action in ("variant", "views") else "edit_image"),
+            recipe_id=action,
+            prompt_raw=prompt,
+            prompt_full=prompt,
+            parent_ids=parent_ids,
+            reference_files=refs,
+            params=dict(params),
+            tags=[action, f"asset:{asset_rel}"],
+            force_uncached=True,
+            bible=bible,
+            run_spent_tracker=tracker,
+        )
+        if post_cut:
+            await _post_cut(actions.get_store(project), stored)
+        # The tag keeps a trim sheet apart from the prop sheet made in the same second.
+        tag = "-trim" if action == "trim_sheet" else ""
+        created.append(_record(actions, project, ws_dir, asset_rel, action, stored, request, f"{asset_path.stem}{tag}-{stamp}-{index + 1}"))
+    remember: dict[str, Any] = {}
+    if action == "candidates" and params["aspect_ratio"] != str(meta.get("aspect") or ""):
+        remember["aspect"] = params["aspect_ratio"]  # the next run opens with the framing picked this time
+    if created and meta.get("cover") and not meta.get("winner"):
+        remember["winner"] = created[0]  # key art goes straight onto the project card
+    elif action == "candidates" and created and not meta.get("winner"):
+        # A lone image is the pick: as with the first sound take, there is nothing else to choose from.
+        images = [o["path"] for items in list_outputs(ws_dir, asset_path).values() for o in items if o["type"] == "image"]
+        if len(images) == 1:
+            remember["winner"] = images[0]
+    if remember:
+        update_asset(ws_dir, asset_rel, remember)
+    return created

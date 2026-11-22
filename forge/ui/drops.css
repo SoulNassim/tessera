@@ -1,0 +1,89 @@
+/* Drag and drop (forge/ui/drops.js): the edge glow while dragging, the spot a drop lands on, the label that
+   follows the cursor, Tess's two drop zones, the review sheet, and the glow on what a drop made. No blur. */
+
+#dropVeil { position: fixed; inset: 0; z-index: 40; pointer-events: none; opacity: 0; transition: opacity .16s ease;
+  box-shadow: inset 0 0 0 2px rgba(157, 92, 255, .55), inset 0 0 120px rgba(157, 92, 255, .14); }
+body.dropping #dropVeil { opacity: 1; }
+
+.drop-on { outline: 2px solid var(--brand) !important; outline-offset: -2px; background-color: rgba(157, 92, 255, .1) !important;
+  transition: outline-color .12s, background-color .12s; }
+.wall .wall-tile.drop-on, .asset-tile.drop-on { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(157, 92, 255, .25); }
+[data-drop-winner].drop-on { outline-width: 3px; }
+#content.drop-on { outline-offset: -6px; border-radius: 12px; }
+
+.drop-tip { position: fixed; top: 0; left: 0; z-index: 60; display: inline-flex; align-items: center; gap: 8px; max-width: 340px;
+  padding: 8px 12px; border-radius: 10px; background: #1b1626; border: 1px solid rgba(157, 92, 255, .45); color: var(--text);
+  font-size: 13px; font-weight: 500; pointer-events: none; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.drop-tip[hidden] { display: none; }
+.drop-tip.tess { border-color: rgba(210, 188, 255, .7); background: linear-gradient(120deg, #2a1d44, #1b1626); }
+.drop-tip.off { border-color: var(--line-strong); color: var(--muted); }
+.drop-tip.docked { top: auto; left: 50%; bottom: calc(var(--status-h, 24px) + 96px); transform: translateX(-50%) !important; animation: drop-tip-in .2s ease; }
+.drop-tip .spinner { flex: none; border-color: rgba(157, 92, 255, .3); border-top-color: var(--brand); }
+@keyframes drop-tip-in { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
+
+/* Tess's bar splits in two while something is dragged: attach to the message, or let Tess file it. */
+.dz-split { position: absolute; inset: 0; z-index: 50; min-height: 56px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 6px;
+  border-radius: inherit; background: #111017; animation: drop-tip-in .16s ease; }
+.dz-split [data-dz] { display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px dashed var(--line-strong);
+  border-radius: 14px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.dz-split [data-dz] svg { width: 16px; height: 16px; }
+.dz-split [data-dz="tess"] { color: var(--brand-hi); border-color: rgba(157, 92, 255, .45); }
+.dz-split [data-dz].drop-on { border-style: solid; color: var(--text); }
+.dz-split [data-dz].off { opacity: .45; }
+
+/* What a drop made or filled glows once. */
+.just-dropped { animation: just-dropped 1.4s ease-out; }
+@keyframes just-dropped {
+  0% { box-shadow: 0 0 0 0 rgba(157, 92, 255, .9); }
+  40% { box-shadow: 0 0 0 6px rgba(157, 92, 255, .35); }
+  100% { box-shadow: 0 0 0 12px rgba(157, 92, 255, 0); }
+}
+
+/* Toasts sit above Tess's bar instead of under it. */
+body:has(#chatWin.bar:not([hidden])) .toast { bottom: calc(var(--status-h, 24px) + 96px); z-index: 30; }
+
+/* The review sheet */
+dialog#dialog:has(.drop-sheet) { width: min(980px, calc(100vw - 32px)); }
+.drop-sheet { display: flex; flex-direction: column; max-height: calc(100vh - 34px); }
+.drop-note { margin: 12px 24px 0; padding: 10px 12px; border-radius: 10px; background: rgba(245, 158, 11, .08); border: 1px solid rgba(245, 158, 11, .3); color: #fcd9a0; font-size: 13px; }
+.drop-rows { display: flex; flex-direction: column; gap: 6px; padding: 14px 24px; overflow-y: auto; min-height: 0; }
+.drop-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 170px 130px 170px; gap: 10px; align-items: center; padding: 6px 8px 6px 6px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); transition: opacity .15s, border-color .15s; }
+.drop-row.skip { opacity: .45; }
+.drop-row.by-tess { border-color: rgba(157, 92, 255, .3); }
+.drop-row.arrive { animation: drop-arrive .35s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes drop-arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.drop-thumb { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 9px; overflow: hidden; background: #0c0c10; color: var(--faint); }
+.drop-thumb img { width: 100%; height: 100%; object-fit: contain; image-rendering: auto; }
+.drop-thumb svg { width: 22px; height: 22px; }
+.drop-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.drop-title { width: 100%; height: 30px; padding: 0 8px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text); font: 600 14px var(--sans, inherit); }
+.drop-title:hover:not(:disabled), .drop-title:focus { border-color: var(--line-strong); background: #0f0f14; outline: none; }
+.drop-title:disabled { color: var(--text); opacity: 1; }
+.drop-main small { padding-left: 9px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tess-mark { display: inline-flex; align-items: center; gap: 3px; color: var(--brand-hi); font-weight: 600; }
+.tess-mark svg { width: 11px; height: 11px; }
+.drop-row select, .drop-row .drop-folder { height: 32px; min-width: 0; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; background: #0f0f14; color: var(--text); font-size: 13px; }
+.drop-row select:disabled, .drop-row .drop-folder:disabled { opacity: .35; }
+.drop-sheet.sorting .drop-row { position: relative; overflow: hidden; }
+.drop-sheet.sorting .drop-row::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(157, 92, 255, .12) 50%, transparent 80%);
+  background-size: 200% 100%; animation: drop-shimmer 1.2s linear infinite; pointer-events: none; }
+@keyframes drop-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+.drop-skipped { margin: 0 24px 12px; color: var(--muted); font-size: 12px; }
+.drop-skipped summary { cursor: pointer; }
+.drop-skipped ul { max-height: 140px; overflow: auto; margin: 6px 0 0; padding-left: 18px; }
+.drop-skipped code { color: var(--text); }
+.tess-sort svg, .drop-sheet .run-btn svg { width: 15px; height: 15px; }
+.tess-sort { display: inline-flex; align-items: center; gap: 7px; color: var(--brand-hi); }
+.tess-sort .spinner { border-color: rgba(157, 92, 255, .3); border-top-color: var(--brand); }
+
+@media (max-width: 760px) {
+  .drop-row { grid-template-columns: 44px minmax(0, 1fr); }
+  .drop-row select, .drop-row .drop-folder { grid-column: 2; }
+  .drop-thumb { width: 44px; height: 44px; }
+  .dz-split span { display: none; }
+}
+.dz-split [data-dz] { flex-wrap: wrap; align-content: center; }
+.dz-split [data-dz] .tess-art { flex-basis: 100%; height: clamp(0px, 20vh, 170px); margin: 0 0 6px; object-fit: contain; }
+.dz-split [data-dz].off .tess-art { filter: grayscale(1); }

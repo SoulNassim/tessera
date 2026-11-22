@@ -1,0 +1,21 @@
+/* Live demo pill, shown over the real Tessera UI: in the top bar's free middle, clear of Tess's bar at the bottom. */
+.demo-pill {
+  position: fixed; left: 50%; top: 5px; transform: translateX(-50%); z-index: 9999;
+  display: flex; align-items: center; gap: 12px; padding: 3px 3px 3px 14px; max-width: calc(100vw - 32px);
+  border-radius: 999px; border: 1px solid rgba(255, 122, 156, .45); background: #100f14;
+  box-shadow: 0 12px 40px -12px rgba(255, 122, 156, .55);
+  font: 500 13px/1.2 Inter, system-ui, sans-serif; color: #f4f4f5; white-space: nowrap;
+}
+.demo-pill b { color: #ff7a9c; font-weight: 700; }
+.demo-pill span { color: #a1a1aa; overflow: hidden; text-overflow: ellipsis; }
+/* `?shot` in the address hides the pill, for screenshots of the app itself. */
+.shot .demo-pill { display: none; }
+.demo-pill a { padding: 5px 12px; border-radius: 999px; background: #ff7a9c; color: #2a0612; font-weight: 700; text-decoration: none; }
+@media (max-width: 700px) {
+  .demo-pill { left: auto; right: 12px; top: auto; transform: none; bottom: 140px; padding: 6px 6px 6px 12px; }
+  .demo-pill span { display: none; }
+}
+/* There is no model to connect in the demo. */
+.banner:has([data-settings]) { display: none; }
+/* The website demo shows finished sample art, not placeholders: its own pill says it is a demo. */
+[data-sb="demo"] { display: none; }

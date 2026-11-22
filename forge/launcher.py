@@ -1,0 +1,150 @@
+"""Start Tessera for a coding agent: the agent says "open Tessera" and the studio opens on its project.
+
+The MCP server a coding agent runs (`forge --mcp`) uses this when Tessera isn't running yet. It starts the local
+studio in the background on the same projects folder, waits until it answers, and opens Tessera's app window on
+the agent's project. The server keeps running after the agent stops (its tray icon quits it). The Tessera shortcut
+and the installed app use the same path.
+
+`FORGE_NO_AUTOSTART=1` turns the automatic start off; `open_tessera` still works when asked for.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from forge.appwindow import open_window, spawn_detached
+from forge.config import get_config_dir, get_projects_root, load_config
+
+START_TIMEOUT = 30.0
+# Set on a studio started this way: it has no window or terminal, so Settings offers "Stop Tessera".
+BACKGROUND_ENV = "FORGE_BACKGROUND"
+
+
+def app_url() -> str:
+    return (os.environ.get("FORGE_APP_URL") or f"http://127.0.0.1:{load_config().port or 8420}").rstrip("/")
+
+
+def _quit_marker() -> Path:
+    return get_config_dir() / "quit"
+
+
+def mark_quit() -> None:
+    """The studio is quitting on purpose (tray, Settings, an update): open windows close instead of restarting it."""
+    try:
+        _quit_marker().parent.mkdir(parents=True, exist_ok=True)
+        _quit_marker().write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def quit_since(moment: float) -> bool:
+    """The studio was quit on purpose after `moment` (a time.time())."""
+    try:
+        return float(_quit_marker().read_text(encoding="utf-8")) >= moment
+    except (OSError, ValueError):
+        return False
+
+
+def autostart_enabled() -> bool:
+    return os.environ.get("FORGE_NO_AUTOSTART", "").strip().lower() not in ("1", "true", "yes")
+
+
+def _health(base: str) -> dict[str, Any] | None:
+    import json
+
+    try:
+        with urllib.request.urlopen(f"{base}/api/health", timeout=1.0) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _same_projects(health: dict[str, Any]) -> bool:
+    return Path(str(health.get("projects_dir") or "")).resolve() == get_projects_root().resolve()
+
+
+def is_running(base: str | None = None) -> bool:
+    """Tessera answers at `base` and serves the same projects folder as this process."""
+    health = _health(base or app_url())
+    return bool(health) and _same_projects(health)
+
+
+def project_url(project: str, base: str | None = None) -> str:
+    return f"{base or app_url()}/?{urllib.parse.urlencode({'project': project})}" if project else f"{base or app_url()}/"
+
+
+def _spawn(port: int, project: str) -> None:
+    log_dir = get_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log = open(log_dir / "tessera-server.log", "ab")  # noqa: SIM115 — handed to the child, which outlives us
+    env = os.environ | {"FORGE_PROJECTS_DIR": str(get_projects_root()), "FORGE_OPEN_PROJECT": project, BACKGROUND_ENV: "1"}
+    env.pop("FORGE_PROJECT", None)  # the studio serves every project
+    # The installed app (a frozen build) is its own CLI: any argument makes it run the server, not the launcher.
+    server = ["--no-browser", "--port", str(port)]
+    command = [sys.executable, *server] if getattr(sys, "frozen", False) else [sys.executable, "-m", "forge.cli", *server]
+    spawn_detached(command, stdout=log, stderr=log, env=env)  # breaks away from a coding agent's job object
+
+
+def _stop_stale(base: str) -> None:
+    """A Tessera from before an update still holds the port: ask it to quit so the new one can start.
+
+    Only a background studio (started by the launcher, with no window) can be asked; a window or terminal
+    has to be closed by the user."""
+    health = _health(base) or {}
+    if not health.get("background"):
+        raise RuntimeError(f"An older Tessera ({health.get('version') or 'before 3.5'}) is still running at {base}. Quit it (its window, tray icon or terminal), then open Tessera again.")
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"{base}/api/quit", method="POST"), timeout=2.0).read()
+    except (OSError, ValueError):
+        pass
+    deadline = time.time() + 10
+    while _health(base) and time.time() < deadline:
+        time.sleep(0.25)
+    if _health(base):
+        raise RuntimeError(f"The older Tessera at {base} did not quit. Quit it, then open Tessera again.")
+
+
+def ensure_running(project: str = "", timeout: float = START_TIMEOUT) -> bool:
+    """Start the studio if it isn't up. Returns True when this call started it."""
+    from forge import __version__
+
+    base = app_url()
+    health = _health(base)
+    if health and _same_projects(health):
+        if health.get("version") == __version__:
+            return False
+        _stop_stale(base)  # an update replaced the app; the old studio still serves the old files
+    elif health:
+        raise RuntimeError(f"Another Tessera is running at {base} with a different projects folder ({health.get('projects_dir')}). Close it, or open that one.")
+    port = urllib.parse.urlsplit(base).port or 8420
+    _spawn(port, project)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_running(base):
+            return True
+        time.sleep(0.25)
+    raise RuntimeError(f"Tessera did not start at {base}. Run `tessera` yourself; the log is in {get_config_dir() / 'logs' / 'tessera-server.log'}.")
+
+
+LOADING_PAGE = Path(__file__).resolve().parent / "ui" / "loading.html"
+
+
+def open_tessera(project: str, *, browser: bool = True, start: bool = True) -> dict[str, Any]:
+    """Make sure the studio runs and show it on `project`.
+
+    When Tessera has to start first, its window opens at once on a small "Starting Tessera" page that switches to the
+    studio as soon as it answers, instead of the user staring at nothing for a few seconds."""
+    url = project_url(project)
+    opened = False
+    if start and browser and LOADING_PAGE.is_file() and not _health(app_url()):
+        opened = open_window(f"{LOADING_PAGE.as_uri()}#{urllib.parse.quote(url, safe='')}")
+    started = ensure_running(project) if start else False
+    if browser and not opened:
+        opened = open_window(url)
+    return {"url": url, "started": started, "opened": opened, "project": project}
