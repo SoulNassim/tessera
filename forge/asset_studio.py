@@ -589,6 +589,13 @@ def mesh_settings(cfg: Any, overrides: dict[str, Any] | None = None) -> dict[str
     }
 
 
+def mesh_maker(model: str) -> tuple[str, str]:
+    """(service, its model) for a 3D model id such as "tripo:v3.1-20260211"; ("", "") for anything else."""
+    service, _, name = str(model or "").partition(":")
+    known = {"meshy": MESH_CHOICES["ai_model"], "tripo": tripo.MODELS}.get(service, ())
+    return (service, name) if name in known else ("", "")
+
+
 def default_source(ws_dir: Path, asset: dict[str, Any]) -> str:
     if asset["winner"]:
         return asset["winner"]
@@ -620,11 +627,13 @@ def build_request(ws_dir: Path, rel: str, action: str, *, source: str = "", inst
             raise FileNotFoundError(f"No image '{source}'.")
 
     if action == "make_3d":
-        use_tripo = cfg.default_3d_provider == "tripo" and not cfg.default_3d_service_model
+        maker, maker_model = mesh_maker(model)  # picked for this run, else the one in Settings
+        service_model = "" if maker else cfg.default_3d_service_model
+        use_tripo = maker == "tripo" if maker else cfg.default_3d_provider == "tripo" and not service_model
         references = [{"path": source, "source": "Winner image", "role": "source"}] \
             + [{"path": view["path"], "source": "Turnaround view", "role": "view"} for view in asset["outputs"]["views"] if view["type"] == "image"][:3]
         if use_tripo:
-            settings = tripo.settings_from_config(cfg)
+            settings = tripo.settings_from_config(cfg, {"model": maker_model} if maker else None)
             return {
                 "action": action, "asset": asset["path"], "prompt": "", "parts": [], "references": references, "engine": "tripo",
                 "model": f"tripo:{settings['model']}", "settings": settings, "choices": tripo.TRIPO_CHOICES, "count": 1,
@@ -636,8 +645,8 @@ def build_request(ws_dir: Path, rel: str, action: str, *, source: str = "", inst
             "parts": [],
             "references": references,
             "engine": "meshy",
-            "model": cfg.default_3d_service_model or f"{cfg.default_3d_provider}:{cfg.default_3d_model}",
-            "settings": mesh_settings(cfg),
+            "model": model if maker else service_model or f"{cfg.default_3d_provider}:{cfg.default_3d_model}",
+            "settings": mesh_settings(cfg, {"ai_model": maker_model} if maker else None),
             "choices": {**MESH_CHOICES, "polycount_presets": list(POLYCOUNT_PRESETS)},
             "count": 1,
         }
@@ -1153,13 +1162,14 @@ async def run_action(actions: Any, project: str, request: dict[str, Any]) -> lis
         if not refs:
             raise ValueError("Make 3D needs a source image.")
         service_model = str(request.get("model") or "")
-        provider_3d = "service" if service_model.startswith("svc:") else cfg.default_3d_provider or "meshy"
+        maker, maker_model = mesh_maker(service_model)
+        provider_3d = "service" if service_model.startswith("svc:") else maker or cfg.default_3d_provider or "meshy"
         if service_model.startswith("svc:"):
             mesh_params: dict[str, Any] = {"model": service_model}
         elif provider_3d == "tripo":
-            mesh_params = tripo.settings_from_config(cfg, request.get("settings"))
+            mesh_params = tripo.settings_from_config(cfg, {**({"model": maker_model} if maker else {}), **(request.get("settings") or {})})
         else:
-            mesh_params = mesh_settings(cfg, request.get("settings"))
+            mesh_params = mesh_settings(cfg, {**({"ai_model": maker_model} if maker else {}), **(request.get("settings") or {})})
         stored = await executor._generate_single_asset(
             # A signed-in service's 3D model when one was picked, else the 3D provider from Settings.
             provider_id=provider_3d,

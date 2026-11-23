@@ -7,7 +7,7 @@ let ctx = null;
 let cat = null;      // the catalogue: node types, groups, bridges
 let ed = null;       // the open workflow
 let clip = null;     // copied steps
-let models = null;   // the image models, for the Artist menu
+let makers = null;   // the AI models a step can be given, and what Automatic uses (GET /api/flows/models)
 
 const CARD_W = 300, GAP_X = 96, GAP_Y = 40;
 const MIN_Z = 0.25, MAX_Z = 1.6;
@@ -91,6 +91,7 @@ export function open(context, data) {
   setMode(ed.mode);
   if (ed.doc.tidy) tidy();
   opening();
+  loadMakers();
 }
 
 // The workspace changed (an asset was saved, a file arrived): what is done may have changed, the steps have not.
@@ -552,7 +553,8 @@ function field(node, f) {
       : `<span>${ic(f.kind === "picture" ? "upload" : "cube")}Drop a ${word} here</span>`}
       <div class="fl-file-acts"><button type="button" data-act="upload">${v ? "Replace" : "From my computer"}</button><button type="button" data-act="project">From this project</button></div></div></div>`;
   }
-  // Longer choices, models and sections open a menu.
+  if (f.kind === "maker") return `<div class="fl-f">${label}${makerButton(node, f, attr)}</div>`;
+  // Longer choices and sections open a menu.
   return `<div class="fl-f">${label}<button type="button" class="fl-select" ${attr} data-act="choose"><span>${esc(valueLabel(f, v))}</span>${ic("down")}</button></div>`;
 }
 
@@ -560,10 +562,74 @@ const countLines = (v) => new Set(String(v || "").split("\n").map((l) => l.trim(
 
 function choicesOf(f) {
   if (f.kind === "section") return [{ value: "", label: "Decide for me", hint: "The section that fits what it is" }, ...ed.sections.map((s) => ({ value: s.path, label: s.name }))];
-  if (f.kind === "image_model") return [{ value: "", label: "Decide for me", hint: "The model chosen in Settings" }, ...(models || [])];
   return f.choices;
 }
 const valueLabel = (f, v) => choicesOf(f).find((c) => c.value === v)?.label || (v ? ctx.humanize(v) : "Decide for me");
+
+// ---------- the AI model of a step ----------
+
+const LOGOS = { Gemini: "ui/logos/gemini.svg", Meshy: "ui/logos/meshy.png", ElevenLabs: "ui/logos/elevenlabs.svg", Higgsfield: "ui/logos/higgsfield.png", fal: "ui/logos/fal.png" };
+const logo = (who) => `<span class="fl-logo">${LOGOS[who] ? `<img src="${LOGOS[who]}" alt="">` : who ? esc(who[0]) : ic("sparkle")}</span>`;
+
+async function loadMakers() {
+  const mine = ed;
+  const got = await ctx.api("/api/flows/models").catch(() => null);
+  if (got) makers = got;
+  if (got && mine === ed) draw();
+  return got;
+}
+
+// What can make this step's result: a sound step only lists models for the kind of sound it makes.
+function makerOptions(node, f) {
+  const all = makers?.options[f.makes === "pixel" ? "image" : f.makes] || [];
+  return f.makes === "sound" ? all.filter((o) => o.kinds.includes(node.fields.kind)) : all;
+}
+
+function makerOf(node, f) {
+  const list = makerOptions(node, f), id = node.fields.model;
+  const mine = id && list.find((o) => o.id === id);
+  if (mine || (id && f.makes !== "sound")) return { auto: false, option: mine || { id, who: "", name: ctx.humanize(id.split(/[/:]/).pop()), ready: false } };
+  const option = list.find((o) => o.id === makers?.automatic[f.makes === "sound" ? node.fields.kind : f.makes]);
+  return { auto: true, option: option && (option.ready || makers.demo) ? option : null };
+}
+
+function makerButton(node, f, attr) {
+  const { auto, option } = makerOf(node, f);
+  const under = auto ? "Automatic" : [option.who !== option.name && option.who, option.price].filter(Boolean).join(" · ") || "Your choice";
+  return `<button type="button" class="fl-model${auto ? "" : " own"}" ${attr} data-act="maker" title="Choose the AI model" aria-haspopup="listbox">${logo(option?.who)}<span><b>${esc(option?.name || "Automatic")}</b><small>${esc(option ? under : "Tessera picks one that's connected")}</small></span>${ic("down")}</button>`;
+}
+
+async function makerMenu(node, f, anchor) {
+  if (!makers) await loadMakers();
+  if (!ed || !makers || !anchor.isConnected) return;
+  const el = pop(anchor, `<div class="fl-pal"><strong>AI model</strong><input type="text" placeholder="Search" aria-label="Search AI models" autocomplete="off" spellcheck="false" hidden><div class="fl-pal-list fl-makers" role="listbox"></div></div>`, { width: 340 });
+  const list = $(".fl-makers", el), box = $("input", el);
+  const paint = () => {
+    const q = box.value.trim().toLowerCase(), all = makerOptions(node, f), now = makerOf(node, f);
+    const usable = (o) => o.ready || makers.demo;
+    const auto = all.find((o) => o.id === makers.automatic[f.makes === "sound" ? node.fields.kind : f.makes] && usable(o));
+    const row = (value, who, name, note, price, on) => `<button type="button" role="option" aria-selected="${on}" data-act="choice" data-node="${node.id}" data-for="${f.id}" data-value="${esc(value)}" class="${on ? "now" : ""}">${logo(who)}<span><b>${esc(name)}</b>${note ? `<small>${esc(note)}</small>` : ""}</span>${price ? `<em>${esc(price)}</em>` : ""}${on ? ic("check") : ""}</button>`;
+    const why = !auto ? "Uses what you connect" : f.makes === "pixel" ? `${auto.name}: your best one for pixel art` : f.makes === "sound" ? auto.name : `${auto.name}, as set in Settings`;
+    const hits = all.filter((o) => usable(o) && (!q || `${o.who} ${o.name} ${o.note}`.toLowerCase().includes(q)));
+    const groups = [...new Set(hits.map((o) => o.who))];
+    const closed = q ? [] : [...new Set(all.map((o) => o.who))].filter((who) => !all.some((o) => o.who === who && usable(o)));
+    list.innerHTML = (q ? "" : row("", "", "Automatic", why, "", now.auto))
+      + groups.map((who) => `<span class="fl-label">${esc(who)}</span>${hits.filter((o) => o.who === who).map((o) => row(o.id, o.who, o.name, o.note, o.price, !now.auto && now.option.id === o.id)).join("")}`).join("")
+      + (closed.length ? `<span class="fl-label">Not connected</span>${closed.map((who) => `<button type="button" class="shut" data-act="connect">${logo(who)}<span><b>${esc(who)}</b><small>${plural(all.filter((o) => o.who === who).length, "AI model")}</small></span><em>Connect</em></button>`).join("")}` : "")
+      || `<p class="fl-none">No AI model called that.</p>`;
+    box.hidden = all.filter(usable).length < 9;
+    el._place();
+  };
+  box.addEventListener("input", (e) => { e.stopPropagation(); paint(); });
+  box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); $("[data-act=choice]", list)?.click(); } });
+  paint();
+  const picked = $(".now", list);  // not scrollIntoView: that would scroll the editor as well
+  if (picked) list.scrollTop = Math.max(0, picked.offsetTop - list.offsetTop - list.clientHeight / 2);
+  if (!box.hidden && matchMedia("(pointer: fine)").matches) box.focus({ preventScroll: true });
+  // An account connected a moment ago shows up without leaving the page.
+  const was = JSON.stringify(makers);
+  if (await loadMakers() && ed && JSON.stringify(makers) !== was) { if (ed.pop === el) paint(); refresh(); }
+}
 
 function message(node, st) {
   const fixes = { settings: "Open Settings", input: "Connect" };
@@ -870,12 +936,7 @@ function helpFor(node, anchor) {
   pop(anchor, `<div class="fl-help"><strong>${esc(s.label)}</strong><p>${esc(s.help)}</p>${takes ? `<span class="fl-label">Takes</span><ul>${takes}</ul>` : ""}${s.out ? `<span class="fl-label">Gives</span><ul><li data-t="${s.out}"><i></i>${esc(a(cat.types[s.out]))}</li></ul>` : ""}</div>`, { width: 300 });
 }
 
-async function chooseMenu(node, f, anchor) {
-  if (f.kind === "image_model" && !models) {
-    const data = await ctx.api("/api/studio/options").catch(() => ({ models: [] }));
-    models = data.models.filter((m) => m.available).map((m) => ({ value: m.id, label: m.label || m.name || m.id, hint: m.price ? `about $${Number(m.price).toFixed(2)} each` : "" }));
-    if (!ed) return;
-  }
+function chooseMenu(node, f, anchor) {
   const v = node.fields[f.id];
   pop(anchor, `<div class="fl-list tall">${choicesOf(f).map((c) => `<button type="button" data-act="choice" data-node="${node.id}" data-for="${f.id}" data-value="${esc(c.value)}" class="${c.value === v ? "on" : ""}"><span><b>${esc(c.label)}</b>${c.hint ? `<small>${esc(c.hint)}</small>` : ""}</span>${c.value === v ? ic("check") : ""}</button>`).join("")}</div>`, { width: Math.max(260, anchor.offsetWidth) });
 }
@@ -969,9 +1030,15 @@ function onClick(event) {
     bin: () => remove([node.id]),
     fold: () => mutate(() => { node.more = !node.more; }, `fold${node.id}`),
     toggle: () => mutate(() => { node.fields[d.field] = !node.fields[d.field]; }),
-    set: () => mutate(() => { node.fields[d.field] = f.kind === "number" ? Number(d.value) : d.value; }),
+    set: () => mutate(() => {
+      node.fields[d.field] = f.kind === "number" ? Number(d.value) : d.value;
+      const own = spec(node).fields.find((x) => x.kind === "maker");
+      if (own && makers && node.fields.model && own.makes === "sound" && makerOf(node, own).auto) node.fields.model = "";  // it made the other kind of sound
+    }),
     multi: () => mutate(() => { const v = new Set(node.fields[d.field]); v.has(d.value) ? v.delete(d.value) : v.add(d.value); node.fields[d.field] = f.choices.map((c) => c.value).filter((c) => v.has(c)); }),
     choose: () => chooseMenu(node, f, t),
+    maker: () => makerMenu(node, f, t),
+    connect: () => { closePop(); ctx.settingsDialog("accounts"); },
     choice: () => { closePop(); mutate(() => { node.fields[d.for] = d.value; }); },
     upload: () => browse(node),
     project: () => projectFiles(node, node.type === "my_model" ? "model" : "picture", t),

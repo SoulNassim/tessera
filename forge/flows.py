@@ -28,9 +28,9 @@ from typing import Any, Awaitable, Callable
 
 from PIL import Image
 
-from forge import asset_studio, flow_nodes
+from forge import asset_studio, flow_models, flow_nodes
 from forge.config import load_config
-from forge.flow_nodes import NODES, TYPES, clean_fields, default_fields, fits
+from forge.flow_nodes import NODES, TYPES, clean_fields, default_fields, fits, key_fields
 from forge.overview import humanize, move_to_trash, resolve_rel, slugify
 
 FLOWS_DIR = ".flows"
@@ -399,7 +399,7 @@ class Plan:
         out = []
         for index, item in enumerate(inputs[first]):
             others = {port: self._matching(item, inputs[port], index, len(inputs[first]), port) for port in rest}
-            key = sha(node["type"], node["fields"], node["take"], _signature(item), {p: [_signature(v) for v in vs] for p, vs in others.items()})
+            key = sha(node["type"], key_fields(node), node["take"], _signature(item), {p: [_signature(v) for v in vs] for p, vs in others.items()})
             out.append((key, item, others))
         return out
 
@@ -544,9 +544,11 @@ def setup_problem(node: dict[str, Any]) -> dict[str, Any] | None:
     cfg = load_config()
     if not paid or cfg.demo_mode:
         return None
+    if flow_models.chosen(node):
+        return flow_models.missing(node, cfg)
     say = ""
     if paid == "image":
-        model = str(node["fields"].get("model") or "") or asset_studio.default_image_model(cfg)
+        model = asset_studio.default_image_model(cfg)
         if not model.startswith("svc:") and not any(m["available"] for m in asset_studio.list_image_models()):
             say = "Connect an image account to draw."
     elif paid == "3d":
@@ -568,20 +570,18 @@ def job_cost(node: dict[str, Any]) -> tuple[float, str]:
     cfg = load_config()
     if not paid or cfg.demo_mode:
         return 0.0, ""
+    model = flow_models.used(node, cfg)
+    if model.startswith("svc:") and paid != "sound":
+        return 0.0, f"{model[4:].split('/')[0].title()} credits"
     if paid == "image":
-        model = str(node["fields"].get("model") or "") or asset_studio.default_image_model(cfg)
-        if model.startswith("svc:"):
-            return 0.0, f"{model[4:].split('/')[0].title()} credits"
         price = next((m["price"] for m in asset_studio.list_image_models() if m["id"] == model), 0.0)
         return float(price or 0) * int(NODES[node["type"]].get("cost_count") or node["fields"].get("count") or 1), ""
     if paid == "3d":
-        if cfg.default_3d_service_model.startswith("svc:"):
-            return 0.0, f"{cfg.default_3d_service_model[4:].split('/')[0].title()} credits"
-        if cfg.default_3d_provider == "tripo":
+        if model.startswith("tripo:"):
             return tripo.estimate_credits("image", {"texture": node["fields"]["texture"]}) * tripo.USD_PER_CREDIT, ""
         return 0.3 if node["fields"]["texture"] else 0.2, ""
     if paid in ("rig", "animate"):
-        if game_tools.rig_engine() == "tripo":
+        if (node["fields"].get("model") or game_tools.rig_engine()) == "tripo":
             return tripo.CREDITS["rig" if paid == "rig" else "retarget"] * tripo.USD_PER_CREDIT, ""
         return (game_tools.RIG_CREDITS if paid == "rig" else game_tools.ANIMATION_CREDITS) / 100, ""
     return 0.0, "sound credits"
@@ -605,7 +605,9 @@ def check(ws_dir: Path, flow_id: str, doc: Any, target: str = "") -> dict[str, A
             if src and src["type"] in ("draw", "pixel") and src["fields"]["count"] > 1:
                 row["advice"] = {"text": f"This makes {src['fields']['count']} models per idea, one for each picture.", "fix": "pick", "from": src["id"]}
         if nid in keep and spec.get("paid") and row["todo"] and not row["problem"]:
-            cost, why = job_cost(node)
+            rigged = next((plan.nodes[s] for s in plan.wired(nid, "rig")), None) if spec["paid"] == "animate" else None
+            # Moves come from whoever made the skeleton.
+            cost, why = job_cost({**node, "fields": {**node["fields"], "model": rigged["fields"].get("model") or ""}} if rigged else node)
             usd += cost * row["todo"]
             if why and why not in credits:
                 credits.append(why)

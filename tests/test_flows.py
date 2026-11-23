@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from PIL import Image, ImageDraw
 
-from forge import asset_studio, flow_draft, flow_nodes, flow_steps, flows
+from forge import asset_studio, flow_draft, flow_models, flow_nodes, flow_steps, flows
 from forge.blueprint_contract import split_frontmatter
 
 
@@ -182,6 +182,144 @@ def test_without_an_account_the_step_says_so(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setattr(asset_studio, "default_image_model", lambda cfg: "gemini")
     monkeypatch.setattr(asset_studio, "list_image_models", lambda: [{"id": "gemini", "available": False, "price": 1}])
     assert flows.check(tmp_path, flow, doc)["problems"][0]["fix"] == "settings"
+
+
+# ---------- the AI model of a step ----------
+
+def _real(monkeypatch: pytest.MonkeyPatch, **keys: str) -> Any:
+    """Settings outside demo mode with only these keys; nothing is ever sent."""
+    from forge import game_tools
+
+    cfg = flows.load_config().model_copy(update={"demo_mode": False, "default_3d_provider": "meshy", "default_3d_service_model": ""})
+    monkeypatch.setattr(type(cfg), "get_key", lambda self, name, logins=True: keys.get(name, ""))
+    for module in (flows, asset_studio, flow_steps, game_tools):
+        monkeypatch.setattr(module, "load_config", lambda: cfg)
+    return cfg
+
+
+def test_every_paid_step_has_its_model_on_the_card() -> None:
+    for kind, spec in flow_nodes.NODES.items():
+        own = [f for f in spec["fields"] if f["kind"] == "maker"]
+        # Moves come from whoever made the skeleton, so that step has no choice of its own.
+        assert bool(own) == (bool(spec.get("paid")) and kind != "animate"), kind
+        assert not any(f.get("more") for f in own)
+
+
+def test_results_made_before_a_step_had_its_model_are_still_there() -> None:
+    doc = flows.clean_doc(_doc(("p", "my_picture", {}), ("m", "make3d", {}), wires=[("p", "m", "picture")]))
+    node = doc["nodes"][1]
+    before = {"detail": "game", "texture": True}  # all the step had in 1.1.0
+    assert node["fields"]["model"] == "" and flow_nodes.key_fields(node) == before
+    node["fields"]["model"] = "tripo:v3.1-20260211"
+    assert flow_nodes.key_fields(node) == {**before, "model": "tripo:v3.1-20260211"}
+    # Drawing always had one, so its empty choice was always part of the key.
+    assert flow_nodes.key_fields(flows.clean_doc(_doc(("d", "draw", {})))["nodes"][0])["model"] == ""
+
+
+@pytest.mark.asyncio
+async def test_the_chosen_model_makes_it_and_going_back_is_free(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FORGE_DEMO_MODE", "1")
+    studio = Studio(tmp_path)
+
+    def doc(model: str) -> dict[str, Any]:
+        return _doc(("a", "idea", {"text": "frog"}), ("d", "draw", {"model": model}), ("v", "views", {}), wires=[("a", "d", "text"), ("d", "v", "picture")])
+
+    flow = flows.create(tmp_path, doc(""))["id"]
+    await _run(tmp_path, flow, doc("meshy:nano-banana-pro"), studio)
+    assert [r["action"] for r in studio.requests] == ["candidates", "views"]
+    assert studio.requests[0]["model"] == "meshy:nano-banana-pro" != studio.requests[1]["model"]
+    assert flows.check(tmp_path, flow, doc("gemini-3-pro-image"))["counts"]["image"]
+    assert flows.check(tmp_path, flow, doc("meshy:nano-banana-pro"))["left"] == 0
+
+
+@pytest.mark.asyncio
+async def test_each_step_sends_its_own_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FORGE_DEMO_MODE", "1")
+    studio = Studio(tmp_path)
+    picture = flows.rel_to(tmp_path, _picture(tmp_path / "pics" / "frog.png"))
+    doc = _doc(("p", "my_picture", {"path": picture}), ("c", "change", {"idea": "a red cape", "model": "gemini-3-pro-image"}),
+               ("v", "views", {"model": "gemini-3.1-flash-image"}), ("x", "pixel", {"idea": "slime", "model": "meshy:gpt-image-2"}),
+               ("m", "make3d", {"model": "tripo:P1-20260311"}), ("s", "sound", {"idea": "a door", "kind": "sfx", "model": "stability_audio:sfx"}),
+               ("t", "sound", {"idea": "a song", "kind": "music", "model": "stability_audio:sfx"}),
+               wires=[("p", "c", "picture"), ("p", "v", "picture"), ("p", "m", "picture")])
+    flow = flows.create(tmp_path, doc)["id"]
+    await _run(tmp_path, flow, doc, studio)
+    sent = {}
+    for r in studio.requests:
+        sent[r["kind"] if r.get("audio") else "pixel" if "slime" in r["prompt"] else r["action"]] = r
+    assert (sent["edit"]["model"], sent["views"]["model"], sent["pixel"]["model"]) == ("gemini-3-pro-image", "gemini-3.1-flash-image", "meshy:gpt-image-2")
+    assert sent["make_3d"]["model"] == "tripo:P1-20260311" and sent["make_3d"]["engine"] == "tripo"
+    assert sent["make_3d"]["settings"]["model"] == "P1-20260311" and sent["make_3d"]["settings"]["face_limit"] == 12000
+    assert sent["sfx"]["model"] == "stability_audio:sfx"
+    assert sent["music"]["model"].endswith(":music")  # a model for another kind of sound doesn't count
+
+
+@pytest.mark.asyncio
+async def test_a_skeleton_comes_from_the_chosen_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _real(monkeypatch, meshy="k", tripo="k")
+    studio = Studio(tmp_path)
+    (tmp_path / "frog.glb").write_bytes(b"glTF" + b"\0" * 40)
+    for body, model in (("biped", "tripo"), ("biped", ""), ("quadruped", "meshy")):
+        doc = _doc(("m", "my_model", {"path": "frog.glb"}), ("r", "rig", {"model": model, "body": body}), wires=[("m", "r", "model")])
+        _, said = await _run(tmp_path, flows.create(tmp_path, doc)["id"], doc, studio)
+    assert [(r["engine"], r["settings"]["engine"], r["model"]) for r in studio.requests] == [("tripo", "tripo", "tripo:rigging"), ("meshy", "meshy", "meshy:rigging")]
+    assert "Choose Tripo" in said["r"]["error"]  # nothing is sent that can't work
+
+
+@pytest.mark.asyncio
+async def test_a_picked_3d_model_goes_to_its_own_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    from forge.server.app import _ws_dir, actions
+
+    ws = _ws_dir("makers")
+    (ws / "frog.md").write_text("---\nkind: creature\n---\n# Frog\n", encoding="utf-8")
+    source = flows.rel_to(ws, _picture(ws / "frog" / "candidates" / "frog.png"))
+    asked: list[tuple[str, dict[str, Any]]] = []
+
+    async def generate(**kw: Any) -> Any:
+        asked.append((kw["provider_id"], kw["params"]))
+        raise RuntimeError("enough")
+
+    monkeypatch.setattr(actions.get_executor("makers"), "_generate_single_asset", generate)
+    for model in ("tripo:P1-20260311", "meshy:meshy-6", "", "meshy:nano-banana-pro"):
+        with pytest.raises(RuntimeError, match="enough"):
+            await asset_studio.run_action(actions, "makers", asset_studio.build_request(ws, "frog.md", "make_3d", source=source, model=model))
+    assert [(who, p.get("model") or p.get("ai_model")) for who, p in asked] == [
+        ("tripo", "P1-20260311"), ("meshy", "meshy-6"), ("meshy", "meshy-7.1"), ("meshy", "meshy-7.1")]  # an image model is not a 3D one
+
+
+def test_a_model_without_its_account_says_so_and_the_price_follows_the_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _real(monkeypatch, meshy="k")
+
+    def seen(model: str, count: int = 1) -> dict[str, Any]:
+        doc = _doc(("a", "idea", {"text": "frog"}), ("d", "draw", {"model": model, "count": count}), wires=[("a", "d", "text")])
+        return flows.check(tmp_path, flows.create(tmp_path, doc)["id"], doc)
+
+    assert seen("gemini-3-pro-image")["problems"][0] == {"node": "d", "text": "Connect Gemini, or choose another AI model.", "fix": "settings"}
+    assert seen("svc:higgsfield/soul")["problems"][0]["text"] == "Sign in to Higgsfield, or choose another AI model."
+    assert seen("local:gone")["problems"][0]["fix"] == "field"
+    cheap, dear = seen("meshy:nano-banana", 2), seen("meshy:nano-banana-pro", 2)
+    assert not cheap["problems"] and (cheap["usd"], dear["usd"]) == (0.06, 0.18)
+    node = {"type": "make3d", "fields": {**flow_nodes.default_fields("make3d"), "model": "tripo:v3.1-20260211"}}
+    assert flows.job_cost(node)[0] == pytest.approx(0.4) and flows.setup_problem(node)["fix"] == "settings"
+    rig = {"type": "rig", "fields": {**flow_nodes.default_fields("rig"), "model": "tripo"}}
+    assert flows.job_cost(rig)[0] == pytest.approx(0.25) and "Tripo" in flows.setup_problem(rig)["text"]
+
+
+def test_the_page_is_given_every_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    from forge import service_gen
+
+    cfg = _real(monkeypatch, meshy="secret-key")
+    monkeypatch.setattr(service_gen, "catalog", lambda kind: [{"id": f"svc:higgsfield/{kind}", "label": "Higgsfield · Soul"}])
+    book = flow_models.book(cfg)
+    assert book["automatic"]["image"].startswith("meshy:") and book["automatic"]["3d"] == "meshy:meshy-7.1" and book["automatic"]["rig"] == "meshy"
+    ready = {kind: {o["who"] for o in options if o["ready"]} for kind, options in book["options"].items()}
+    assert ready == {"image": {"Meshy", "Higgsfield"}, "3d": {"Meshy", "Higgsfield"}, "rig": {"Meshy"}, "sound": set()}
+    assert all(o["name"] and o["who"] for options in book["options"].values() for o in options)
+    assert "secret-key" not in json.dumps(book)
+    # Demo mode never asks a signed-in service for anything.
+    monkeypatch.setattr(service_gen, "catalog", lambda kind: pytest.fail("asked"))
+    demo = flow_models.book(cfg.model_copy(update={"demo_mode": True}))
+    assert demo["demo"] and not any(o["id"].startswith("svc:") for options in demo["options"].values() for o in options)
 
 
 # ---------- running ----------

@@ -68,6 +68,12 @@ def style_text(fields: dict[str, Any]) -> str:
     return ". ".join(t for t in (f"{pack.prompt_prefix.strip(' ,')}, {pack.prompt_suffix}" if pack else "", own) if t)
 
 
+def _maker(makes: str, new: bool = True) -> dict[str, Any]:
+    """The AI model a step uses (`forge/flow_models.py`); empty is Automatic. `new`: workflows made before the step had
+    this choice must keep what they paid for, so an empty one is left out of what a result is kept under."""
+    return {"id": "model", "kind": "maker", "makes": makes, "label": "AI model", "default": "", "new": new}
+
+
 # Each step: the fields the page shows (`more: True` hides one under "More options"), its inputs and its output.
 # An input with `field` can be filled in on the card instead of wired. `many` takes several wires.
 # `each` runs once per thing coming in on the first input, so a list of ten ideas makes ten of everything after it.
@@ -121,7 +127,7 @@ NODES: dict[str, dict[str, Any]] = {
     "draw": {
         "label": "Draw a picture", "group": "picture", "icon": "sparkle", "out": "picture", "each": True, "paid": "image",
         "blurb": "An AI artist draws your idea.",
-        "help": "Tessera picks the artist, the shape and the background for you. If 3D comes next, it also asks for a full view and a neutral pose, so the model turns out well.",
+        "help": "Tessera picks the AI model, the shape and the background for you; change any of them if you like. If 3D comes next, it also asks for a full view and a neutral pose, so the model turns out well.",
         "inputs": [{"id": "text", "type": "text", "label": "Idea", "required": True, "field": "idea"},
                    {"id": "style", "type": "style", "label": "Art style"},
                    {"id": "like", "type": "picture", "label": "Look like this", "many": True}],
@@ -130,7 +136,7 @@ NODES: dict[str, dict[str, Any]] = {
                    {"id": "count", "kind": "number", "label": "How many to choose from", "min": 1, "max": 4, "default": 1},
                    {"id": "background", "kind": "choice", "label": "Background", "choices": _choices(("auto", "Decide for me"), ("cutout", "None"), ("scene", "Keep it")), "default": "auto", "more": True},
                    {"id": "shape", "kind": "choice", "label": "Shape", "choices": _choices(("auto", "Decide for me"), ("1:1", "Square"), ("3:4", "Tall"), ("4:3", "Wide"), ("16:9", "Very wide")), "default": "auto", "more": True},
-                   {"id": "model", "kind": "image_model", "label": "Artist", "default": "", "more": True}],
+                   _maker("image", new=False)],
     },
     "pixel": {
         "label": "Draw pixel art", "group": "picture", "icon": "grid", "out": "picture", "each": True, "paid": "image",
@@ -142,7 +148,8 @@ NODES: dict[str, dict[str, Any]] = {
                    {"id": "canvas", "kind": "choice", "label": "Size", "choices": _choices(("16", "16 tiny"), ("32", "32 classic"), ("48", "48"), ("64", "64 detailed")), "default": "32"},
                    {"id": "count", "kind": "number", "label": "How many to choose from", "min": 1, "max": 4, "default": 1},
                    {"id": "view", "kind": "choice", "label": "Seen from", "choices": _choices(("side", "The side"), ("top-down", "Above"), ("three-quarter", "Three-quarter"), ("isometric", "Isometric"), ("front", "The front")), "default": "side", "more": True},
-                   {"id": "outline", "kind": "choice", "label": "Outline", "choices": _choices(("black", "Dark"), ("selective", "Coloured"), ("none", "None")), "default": "black", "more": True}],
+                   {"id": "outline", "kind": "choice", "label": "Outline", "choices": _choices(("black", "Dark"), ("selective", "Coloured"), ("none", "None")), "default": "black", "more": True},
+                   _maker("pixel")],
     },
     "pick": {
         "label": "Let me choose", "group": "picture", "icon": "star", "out": "picture",
@@ -158,14 +165,14 @@ NODES: dict[str, dict[str, Any]] = {
         "inputs": [{"id": "picture", "type": "picture", "label": "Picture", "required": True},
                    {"id": "text", "type": "text", "label": "What to change", "required": True, "field": "idea"}],
         "fields": [{"id": "idea", "kind": "text", "label": "What should change?", "placeholder": "Give it a red cape", "rows": 2},
-                   {"id": "model", "kind": "image_model", "label": "Artist", "default": "", "more": True}],
+                   _maker("image", new=False)],
     },
     "views": {
         "label": "Draw its other sides", "group": "picture", "icon": "turn", "out": "picture", "each": True, "paid": "image", "cost_count": 2,
         "blurb": "Draws the left side and the back of the same thing.",
         "help": "Connect it to “Other sides” on Make it 3D and the back of the model is drawn instead of guessed.",
         "inputs": [{"id": "picture", "type": "picture", "label": "Picture", "required": True}],
-        "fields": [],
+        "fields": [_maker("image")],
     },
     "cutout": {
         "label": "Remove background", "group": "picture", "icon": "scissors", "out": "picture", "each": True,
@@ -213,7 +220,8 @@ NODES: dict[str, dict[str, Any]] = {
                        {"value": "light", "label": "Light", "hint": "Mobile games, crowds, small props"},
                        {"value": "game", "label": "Game-ready", "hint": "Right for most games"},
                        {"value": "high", "label": "High", "hint": "Close-ups and hero pieces"}], "default": "game"},
-                   {"id": "texture", "kind": "toggle", "label": "Paint it", "default": True, "more": True}],
+                   {"id": "texture", "kind": "toggle", "label": "Paint it", "default": True, "more": True},
+                   _maker("3d")],
     },
     "rig": {
         "label": "Add a skeleton", "group": "3d", "icon": "bones", "out": "rig", "each": True, "paid": "rig",
@@ -221,12 +229,13 @@ NODES: dict[str, dict[str, Any]] = {
         "help": "Works on characters with arms and legs, standing with a little space under the arms. Objects and vehicles don't need one.",
         "inputs": [{"id": "model", "type": "model", "label": "3D model", "required": True}],
         "fields": [{"id": "height", "kind": "choice", "label": "How tall is it?", "choices": _choices(("0.6", "Small"), ("1.1", "Child size"), ("1.7", "Person"), ("2.6", "Giant")), "default": "1.7"},
-                   {"id": "body", "kind": "choice", "label": "Body", "choices": _choices(("biped", "Two legs"), ("quadruped", "Four legs")), "default": "biped", "more": True}],
+                   {"id": "body", "kind": "choice", "label": "Body", "choices": _choices(("biped", "Two legs"), ("quadruped", "Four legs")), "default": "biped", "more": True},
+                   _maker("rig")],
     },
     "animate": {
         "label": "Make it move", "group": "3d", "icon": "film", "out": "clip", "each": True, "paid": "animate",
         "blurb": "Walk, run, attack: ready-made moves.",
-        "help": "Pick as many moves as you like. They land in one file, ready for your game. Fine-tune them later in Motion Studio.",
+        "help": "Pick as many moves as you like. They land in one file, ready for your game, and come from whoever made the skeleton. Fine-tune them later in Motion Studio.",
         "inputs": [{"id": "rig", "type": "rig", "label": "3D character", "required": True}],
         "fields": [{"id": "moves", "kind": "multi", "label": "Moves", "choices": _choices(*((m, m) for m in MOVES)), "default": ["Idle", "Walk"], "required": True}],
     },
@@ -238,7 +247,8 @@ NODES: dict[str, dict[str, Any]] = {
         "inputs": [{"id": "text", "type": "text", "label": "Idea", "required": True, "field": "idea"}],
         "fields": [{"id": "idea", "kind": "text", "label": "What should it sound like?", "placeholder": "A heavy wooden door creaks open", "rows": 2},
                    {"id": "kind", "kind": "choice", "label": "It's…", "choices": _choices(("sfx", "A sound effect"), ("music", "Music"), ("voice", "A voice")), "default": "sfx"},
-                   {"id": "count", "kind": "number", "label": "How many takes", "min": 1, "max": 4, "default": 1}],
+                   {"id": "count", "kind": "number", "label": "How many takes", "min": 1, "max": 4, "default": 1},
+                   _maker("sound")],
     },
     # ---------- finish ----------
     "save": {
@@ -275,6 +285,12 @@ def default_fields(node_type: str) -> dict[str, Any]:
             default = {"toggle": False, "multi": [], "number": f.get("min", 1)}.get(f["kind"], "")
         out[f["id"]] = list(default) if isinstance(default, list) else default
     return out
+
+
+def key_fields(node: dict[str, Any]) -> dict[str, Any]:
+    """The choices a step's results are kept under."""
+    late = {f["id"] for f in NODES[node["type"]]["fields"] if f.get("new")}
+    return {k: v for k, v in node["fields"].items() if v or k not in late}
 
 
 def clean_fields(node_type: str, fields: Any) -> dict[str, Any]:

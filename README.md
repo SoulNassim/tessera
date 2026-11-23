@@ -97,7 +97,7 @@ flowchart LR
 | | |
 |---|---|
 | 🎨 **2D art** | Characters, items, environments, UI, VFX. Variants, edits and turnaround views of the winner |
-| 🔗 **Node Studio** | Say what you want and get a workflow: steps joined by wires, from an idea to saved assets. A whole list at once, the price before you run, and nothing made twice |
+| 🔗 **Node Studio** | Say what you want and get a workflow: steps joined by wires, from an idea to saved assets. Pick the AI model on each step or leave it on Automatic. A whole list at once, the price before you run, and nothing made twice |
 | 👾 **Pixel Studio** | Sprites, tiles and icons drawn on a true pixel grid, in your palette |
 | 🧊 **3D models** | From the winner image, at game scale, with a 3D lineup of every model next to a 1.8 m person |
 | 🦴 **Rigs and Motion Studio** | Rig a model, add animations from a library, or pose it by hand and export the clip |

@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 
 from PIL import Image
 
-from forge import asset_studio
+from forge import asset_studio, flow_models
 from forge.blueprint_contract import serialize_frontmatter
 from forge.config import load_config
 from forge.flow_nodes import kind_of
@@ -105,8 +105,7 @@ async def _pixel(run: Run, node: dict[str, Any], key: str, item: Value, others: 
     opts = pixel_engine.defaults({**{k: f[k] for k in ("canvas", "view", "outline")}, "kind": kind if kind in pixel_engine.ASSET_KIND else "character"})
     kind = pixel_engine.ASSET_KIND[opts["kind"]]
     page = _page(run, node, key, kind, item["name"], item["text"], aspect="1:1")
-    best = "" if load_config().demo_mode else pixel_engine.recommended_model(asset_studio.list_image_models())
-    request = asset_studio.build_request(run.ws_dir, page, "candidates", model=best)
+    request = asset_studio.build_request(run.ws_dir, page, "candidates", model=flow_models.used(node, load_config()))
     request.update(prompt=pixel_engine.create_prompt(item["text"], opts), references=[], use_bible=False, count=f["count"],
                    settings={"aspect_ratio": "1:1", "transparent_background": False})
     out = []
@@ -126,7 +125,7 @@ async def _change(run: Run, node: dict[str, Any], key: str, item: Value, others:
 
 async def _views(run: Run, node: dict[str, Any], key: str, item: Value, others: Others, notes: list[str]) -> list[Value]:
     page = _page(run, node, key, item.get("kind") or "prop", item["name"])
-    request = asset_studio.build_request(run.ws_dir, page, "views", source=item["path"])
+    request = asset_studio.build_request(run.ws_dir, page, "views", source=item["path"], model=node["fields"]["model"])
     return [_made(run, "picture", p, item, "views", side=True) for p in _pictures(await run.request(request))]
 
 
@@ -231,7 +230,9 @@ DETAIL: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
 async def _make3d(run: Run, node: dict[str, Any], key: str, item: Value, others: Others, notes: list[str]) -> list[Value]:
     f = node["fields"]
     page = _page(run, node, key, item.get("kind") or "prop", item["name"], item.get("desc") or "", winner=item["path"])
-    request = asset_studio.build_request(run.ws_dir, page, "make_3d", source=item["path"])
+    request = asset_studio.build_request(run.ws_dir, page, "make_3d", source=item["path"], model=f["model"])
+    if f["model"].startswith("svc:"):
+        request["model"] = f["model"]
     request["references"] = request["references"][:1] + [{"path": v["path"], "source": "Other side", "role": "view"} for v in others["sides"][:3]]
     meshy, tripo = DETAIL[f["detail"]]
     wanted = {**tripo, "texture": f["texture"]} if request.get("engine") == "tripo" else {**meshy, "should_texture": f["texture"]}
@@ -244,9 +245,11 @@ async def _rig(run: Run, node: dict[str, Any], key: str, item: Value, others: Ot
     f = node["fields"]
     page = _page(run, node, key, item.get("kind") or "character", item["name"])
     request = asset_studio.build_request(run.ws_dir, page, "rig", source=item["path"])
-    if f["body"] != "biped" and request["settings"]["engine"] == "meshy" and not load_config().demo_mode:
-        raise ValueError("Meshy gives skeletons to two-legged characters only. Connect Tripo in Settings for four legs.")
-    request["settings"] = {**request["settings"], "height_meters": float(f["height"]), "rig_type": f["body"]}
+    engine = flow_models.used(node, load_config())
+    if f["body"] != "biped" and engine == "meshy" and not load_config().demo_mode:
+        raise ValueError("Meshy gives skeletons to two-legged characters only. Choose Tripo as the AI model for four legs.")
+    request.update(engine=engine, model=f"{engine}:rigging")
+    request["settings"] = {**request["settings"], "engine": engine, "height_meters": float(f["height"]), "rig_type": f["body"]}
     made = [p for p in await run.request(request) if "/rig/" in p and p.lower().endswith((".glb", ".fbx"))]
     made.sort(key=lambda p: not p.lower().endswith(".glb"))
     meta = asset_studio.read_asset(run.ws_dir, page)[1]
@@ -308,7 +311,7 @@ async def _vary(run: Run, node: dict[str, Any], key: str, item: Value, others: O
 async def _sound(run: Run, node: dict[str, Any], key: str, item: Value, others: Others, notes: list[str]) -> list[Value]:
     f = node["fields"]
     page = _page(run, node, key, f["kind"], item["name"], item["text"])
-    request = asset_studio.build_request(run.ws_dir, page, "candidates")
+    request = asset_studio.build_request(run.ws_dir, page, "candidates", model=flow_models.chosen(node))
     request["count"] = f["count"]
     return [_made(run, "sound", p, item, "audio", kind=f["kind"]) for p in await run.request(request)]
 

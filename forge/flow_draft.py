@@ -110,7 +110,7 @@ def prompt(text: str) -> str:
         fields = []
         for f in spec["fields"]:
             values = [c["value"] for c in f.get("choices", [])]
-            if f["kind"] in ("image_model", "picture", "model", "section"):
+            if f["kind"] in ("maker", "picture", "model", "section"):
                 continue
             fields.append(f["id"] + {"choice": f" (one of {values})", "multi": f" (list, any of {values})", "number": f" ({f.get('min')}-{f.get('max')})",
                                      "lines": " (text, one per line)", "toggle": " (true/false)"}.get(f["kind"], " (text)"))

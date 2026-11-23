@@ -289,7 +289,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Forge Asset Maker API",
-    version="1.1.0",
+    version="1.1.1",
     description="Playful, lightweight, agent-drivable asset maker for game prototyping",
     lifespan=lifespan,
 )
@@ -2431,6 +2431,14 @@ async def api_flows_read(id: str, project: str = "default") -> dict[str, Any]:
     doc = await asyncio.to_thread(_overview_call, flows.read, ws, id)
     active = _flow_runs.get((project, id))  # before the check: a run that ends meanwhile still counts as running, and says so when it ends
     return {"doc": doc, "check": await asyncio.to_thread(flows.check, ws, id, doc), "live": active[1].live if active else None}
+
+
+@app.get("/api/flows/models")
+async def api_flows_models() -> dict[str, Any]:
+    """The AI models a step can be given, and the one each kind uses on Automatic."""
+    from forge import flow_models
+
+    return await asyncio.to_thread(flow_models.book, load_config())
 
 
 @app.post("/api/flows/create")

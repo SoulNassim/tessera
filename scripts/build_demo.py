@@ -156,6 +156,7 @@ def record_flows(client, ws: Path, data: dict[str, dict]) -> None:
     asyncio.run(flows.Run(ws, flow, flows.read(ws, flow), quiet, quiet, target="recolor").go())  # free steps only
     data[f"/api/flows?id={flow}"] = {"status": 200, "body": client.get("/api/flows", params={"project": PROJECT, "id": flow}).json()}
     data["/api/flows/home"] = {"status": 200, "body": client.get("/api/flows/home", params={"project": PROJECT}).json()}
+    data["/api/flows/models"] = {"status": 200, "body": client.get("/api/flows/models", params={"project": PROJECT}).json()}
     for template in flow_nodes.catalogue()["templates"]:
         keep(template["id"], {"template": template["id"]})
     keep("My workflow", {"doc": {"name": "My workflow"}})  # the empty canvas
