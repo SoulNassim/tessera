@@ -293,6 +293,14 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); }
 
 .asset-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .asset-head .title { margin-bottom: 10px; }
+.copy-pair { display: inline-flex; gap: 6px; margin-left: auto; align-self: flex-start; margin-top: 6px; }
+.copy-pair .mini { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.copy-pair .mini svg { width: 13px; height: 13px; }
+.copy-pair .mini b { font-weight: 600; color: var(--text); }
+.copy-pair .mini:disabled { opacity: .45; cursor: default; }
+.copy-pair.compact { margin: 0; }
+.copy-pair.compact .mini { font-size: 11px; padding: 2px 7px; }
+.prompt-label-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .job-banner { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(157, 92, 255, 0.3); background: rgba(157, 92, 255, 0.08); color: #7dd3fc; margin: 6px 0 18px; font-size: 13px; }
 .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(125, 211, 252, 0.3); border-top-color: #7dd3fc; animation: spin 0.8s linear infinite; }
 /* A project switching in: an empty page, and a spinner only if it takes a moment. */
@@ -1649,6 +1657,13 @@ button.imp-unit { font: inherit; color: inherit; text-align: left; cursor: point
 .tile-pillar svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .asset-tile:hover .tile-pillar, .tile-pillar:focus-visible { opacity: 1; }
 .tile-pillar:hover { border-color: var(--brand); color: var(--brand); }
+/* Copy prompt / copy pillar images, bottom-left of a tile on hover */
+.tile-copy { position: absolute; bottom: 8px; left: 8px; display: flex; gap: 4px; opacity: 0; transform: translateY(3px); transition: opacity .12s, transform .12s; }
+.asset-tile:hover .tile-copy, .tile-copy:focus-within { opacity: 1; transform: none; }
+.tile-copy > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: var(--text); background: rgba(9, 9, 11, .86); border: 1px solid var(--line-strong); cursor: pointer; transition: border-color .12s, color .12s; }
+.tile-copy > span:hover { border-color: var(--brand); color: var(--brand); }
+.tile-copy svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tile-copy > span[disabled] { opacity: .4; pointer-events: none; }
 .hover-stage { position: absolute; inset: 0; opacity: 0; transition: opacity .25s; background: radial-gradient(circle at 50% 35%, #1f1f25, #0b0b0e); }
 .hover-stage.live { opacity: 1; }
 .hover-stage canvas { width: 100% !important; height: 100% !important; }

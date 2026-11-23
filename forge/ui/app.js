@@ -28,6 +28,7 @@ const state = {
 };
 
 let motionLoaded = null; // motion.js once Motion Studio has been opened; it owns the editor on screen
+let flowsLoaded = null;  // flows.js, the same for Node Studio
 
 // ---------- helpers ----------
 
@@ -708,6 +709,8 @@ async function finishOnboarding() {
 async function switchProject(name) {
   motionLoaded?.leave();  // saves an open motion while its project is still the current one
   state.motionSel = null;
+  flowsLoaded?.leave();
+  state.flowSel = undefined;  // the workflow last open in the project switched to
   // The last project's page must not stand in for this one while it loads.
   if (name !== state.project) $("#content").innerHTML = `<div class="view-loading"><span class="spinner"></span></div>`;
   await loadProjects(name);
@@ -907,7 +910,7 @@ async function send(override = {}) {
     state.attachments = [];
     renderAttachments();
     renderMessages();
-    const page = state.view.type === "motion" ? { viewing: "Motion Studio", motion: motionLoaded?.current() || null } : state.view.path ? { viewing: state.view.path } : {};
+    const page = state.view.type === "motion" ? { viewing: "Motion Studio", motion: motionLoaded?.current() || null } : state.view.type === "nodes" ? { viewing: "Node Studio", workflow: flowsLoaded?.current() || null } : state.view.path ? { viewing: state.view.path } : {};
     state.session = await api(`/api/agent/sessions/${id}/messages`, { method: "POST", body: { text, attachments, page, model: override.model || state.model || undefined, effort: override.effort || state.effort } });
     const entry = state.sessions.find((s) => s.id === id);
     if (entry) entry.title = state.session.title;
@@ -2369,6 +2372,7 @@ function renderSections() {
     <button class="sec vault-sec${state.view.type === "home" ? " active" : ""}" data-home>${icon("layers")}<span class="sec-name">Overview</span></button>
     <button class="sec vault-sec${state.view.type === "pipeline" || state.view.type === "vault" ? " active" : ""}" data-pipeline title="Every asset, from request to the copy in your game (P)">${icon("flow")}<span class="sec-name">Pipeline</span>${pipelineBadge()}</button>
     <div class="sec-label">Studios</div>
+    <button class="sec vault-sec${state.view.type === "nodes" ? " active" : ""}" data-flow-nav>${icon("nodes")}<span class="sec-name">Node Studio</span></button>
     <button class="sec vault-sec${state.view.type === "pixel" ? " active" : ""}" data-pixel-nav>${icon("grid")}<span class="sec-name">Pixel Studio</span></button>
     <button class="sec vault-sec${state.view.type === "motion" ? " active" : ""}" data-motion-nav>${icon("bones")}<span class="sec-name">Motion Studio</span></button>
     <button class="sec vault-sec${state.view.type === "levels" || (state.view.path || "").startsWith("levels/") ? " active" : ""}" data-levels>${icon("map")}<span class="sec-name">Levels</span></button>
@@ -2399,6 +2403,7 @@ function renderCrumbs() {
   else if (state.view.type === "levels") parts.push(`<strong>Levels</strong>`);
   else if (state.view.type === "pixel") parts.push(state.pixelSel ? `<button data-px-crumb>Pixel Studio</button><span class="sep">/</span><strong>${esc(humanize(state.pixelSel.path.split("/").pop().replace(/\.md$/, "")))}</strong>` : `<strong>Pixel Studio</strong>`);
   else if (state.view.type === "motion") parts.push(state.motionSel ? `<button data-motion-nav>Motion Studio</button><span class="sep">/</span><strong>${esc(state.motionSel.title || "")}</strong>` : `<strong>Motion Studio</strong>`);
+  else if (state.view.type === "nodes") parts.push(state.flowSel && flowsLoaded?.title() ? `<button data-flow-nav>Node Studio</button><span class="sep">/</span><strong>${esc(flowsLoaded.title())}</strong>` : `<strong>Node Studio</strong>`);
   else if (state.view.type === "board") parts.push(`<strong>Board</strong>`);
   else {
     const segs = path.split("/");
@@ -3025,6 +3030,7 @@ async function mountHero() {
 async function renderViewBody() {
   const ov = state.overview;
   if (state.view.type !== "motion") motionLoaded?.leave();
+  if (state.view.type !== "nodes") flowsLoaded?.leave();
   if (!ov) return;
   if (state.view.type === "doc" && /(^|\/)README\.md$/i.test(state.view.path) && dirOf(state.view.path)) state.view = { type: "folder", path: dirOf(state.view.path) };
   saveView();
@@ -3080,6 +3086,7 @@ async function renderViewBody() {
   if (view.type === "levels") return renderLevels();
   if (view.type === "pixel") return renderPixelPage();
   if (view.type === "motion") return renderMotionPage();
+  if (view.type === "nodes") return renderFlowsPage();
   if (view.type === "board") return renderBoard();
 
   if (view.type === "folder") {
@@ -3175,6 +3182,7 @@ function runningJobs(path) {
 }
 
 const ICON = {
+  nodes: `<rect x="3" y="8" width="7" height="8" rx="1.6"/><rect x="14" y="4" width="7" height="6" rx="1.6"/><rect x="14" y="14" width="7" height="6" rx="1.6"/><path d="M10 12h2M14 7h-2v10h2"/>`,
   flow: `<circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/><path d="M7.2 12h2.6M14.2 12h2.6"/>`,
   link: `<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>`,
   sort: `<path d="M7 4v16M4 7l3-3 3 3M17 20V4m-3 13 3 3 3-3"/>`,
@@ -4149,7 +4157,7 @@ async function makeAsset() {
 
 // The current page and the pages before it survive a refresh, per project.
 const viewKey = () => `forge.view.${state.project}`;
-const PLAIN_VIEWS = ["home", "pipeline", "vault", "levels", "pixel", "motion", "board"];
+const PLAIN_VIEWS = ["home", "pipeline", "vault", "levels", "pixel", "motion", "nodes", "board"];
 const plainView = (v) => (PLAIN_VIEWS.includes(v.type) ? { type: v.type } : { type: v.type, path: v.path });
 
 function saveView() {
@@ -4159,7 +4167,7 @@ function saveView() {
 }
 
 function restoreView() {
-  if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#board"].includes(location.hash)) { state.view = { type: location.hash.slice(1) }; return; }
+  if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#nodes", "#board"].includes(location.hash)) { state.view = { type: location.hash.slice(1) }; return; }
   const hash = location.hash.match(/^#(folder|doc)=(.+)$/);
   if (hash) {
     state.view = { type: hash[1], path: decodeURIComponent(hash[2]), restored: true };
@@ -4222,7 +4230,7 @@ function go(view, { keepForward = false } = {}) {
 window.addEventListener("hashchange", () => {
   const hash = location.hash.match(/^#(folder|doc)=(.+)$/);
   if (hash) go({ type: hash[1], path: decodeURIComponent(hash[2]) });
-  else if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#board"].includes(location.hash)) go({ type: location.hash.slice(1) });
+  else if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#nodes", "#board"].includes(location.hash)) go({ type: location.hash.slice(1) });
 });
 
 function openPath(path) {
@@ -5668,6 +5676,7 @@ function connectSocket() {
       if (msg.project === state.project) renderMissingThumbs(msg.project).catch(() => {});
       if (!$("#settingsView").hidden && state.settings?.tab === "accounts") renderSettings();
     }
+    if (msg.type === "flow_run" && msg.project === state.project) flowsLoaded?.onRun(msg);
     if (msg.type === "service_connected") loadServices().then(() => serviceConnected(msg.service));
     // A cover being painted for another project shows on its card as soon as it lands.
     if (msg.type === "studio_job" && msg.job.status === "done" && !$("#projectsView").hidden) openProjects();
@@ -7597,6 +7606,22 @@ document.addEventListener("click", (event) => {
   return state.view.type === "motion" ? renderView() : go({ type: "motion" });
 });
 
+// ---------- Node Studio: workflows made of steps and wires (flows.js, loaded on demand) ----------
+async function renderFlowsPage() {
+  try {
+    flowsLoaded = await import("./flows.js");
+    if (state.view.type !== "nodes") return;
+    await flowsLoaded.render({ api, fileUrl, thumbUrl, esc, toast, state, renderView, humanize, go, settingsDialog, onTitle: renderCrumbs });
+    renderCrumbs();
+  } catch (err) { $("#content").innerHTML = `<div class="empty">${tessArt("error")}<h1>Node Studio</h1><p>${esc(err.message)}</p></div>`; }
+}
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-flow-nav]")) return;
+  state.flowSel = null;
+  return state.view.type === "nodes" ? renderView() : go({ type: "nodes" });
+});
+
 // ---------- Pixel Studio: a page of its own (sidebar, ⌘K, asset pages and tile menus all lead here) ----------
 // Home: a live "new sprite" maker (pick any picture in the project, see the pixel result as you change size and
 // palette) and the library of every sprite in the project. Editor: full size, with every set in a strip on top.
@@ -8518,7 +8543,7 @@ async function paletteItems() {
   const here = state.view.type === "folder" ? state.view.path : "";
   const actions = [
     ...(onAsset ? [["Generate images", "sparkle", () => openPreview("candidates")], ...(is2d() ? [] : [["Make 3D", "cube", () => openPreview("make_3d")], ["Turnaround views", "turn", () => openPreview("views")], ["Add 3D model", "upload", pickModelFile]])] : []),
-    ["Overview", "layers", () => go({ type: "home" })], ["Pipeline", "flow", () => go({ type: "pipeline" })], ["Copy update note for my coding agent", "flow", () => copyAgentNote("")], ["Final vault", "box", () => go({ type: "vault" })], ["Levels", "map", () => go({ type: "levels" })], ["Pixel Studio", "grid", () => { state.pixelSel = null; go({ type: "pixel" }); }], ["Motion Studio", "bones", () => { state.motionSel = null; go({ type: "motion" }); }], ["New pixel sprite", "grid", () => openPixelNew(state.view.type === "doc" ? state.view.path : "")],
+    ["Overview", "layers", () => go({ type: "home" })], ["Pipeline", "flow", () => go({ type: "pipeline" })], ["Copy update note for my coding agent", "flow", () => copyAgentNote("")], ["Final vault", "box", () => go({ type: "vault" })], ["Levels", "map", () => go({ type: "levels" })], ["Node Studio", "nodes", () => { state.flowSel = null; go({ type: "nodes" }); }], ["Pixel Studio", "grid", () => { state.pixelSel = null; go({ type: "pixel" }); }], ["Motion Studio", "bones", () => { state.motionSel = null; go({ type: "motion" }); }], ["New pixel sprite", "grid", () => openPixelNew(state.view.type === "doc" ? state.view.path : "")],
     [here ? `Generate missing in ${humanize(here.split("/").pop())}` : "Generate all missing", "sparkle", () => batchDialog(here)],
     ...(here ? [["New asset here", "sparkle", () => newAssetDialog(here)]] : []),
     ...(here ? [["Select assets here", "check", () => document.querySelector("[data-select-toggle]")?.click()]] : []),

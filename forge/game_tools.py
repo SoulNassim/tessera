@@ -808,7 +808,7 @@ def export_zip(ws_dir: Path, rel: str, engine: str) -> tuple[bytes, str]:
                 if folder.is_dir():
                     assets += sorted(folder.rglob("*.md"))
     elif target.is_dir():
-        assets = sorted(p for p in target.rglob("*.md") if "pillars" not in p.parts and ".trash" not in p.parts)
+        assets = sorted(p for p in target.rglob("*.md") if "pillars" not in p.parts and not any(part.startswith(".") for part in p.relative_to(target).parts))
     else:
         raise FileNotFoundError(f"Nothing at '{rel}'.")
     buffer = io.BytesIO()

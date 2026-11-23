@@ -121,7 +121,7 @@ _view_cache: dict[tuple[str, str], tuple[tuple[int, int], Any]] = {}
 _view_locks: dict[tuple[str, str], threading.Lock] = {}
 # Requests that never change a workspace, so they don't throw the listings away.
 _READ_ONLY_POSTS = ("/api/studio/preview", "/api/agent/", "/api/mcp", "/api/link", "/api/import/analyze", "/api/sprites/preview",
-                    "/api/services", "/api/config", "/api/update", "/api/access", "/api/system", "/api/gamescan", "/api/variant/preview")
+                    "/api/services", "/api/config", "/api/update", "/api/access", "/api/system", "/api/gamescan", "/api/variant/preview", "/api/flows/check", "/api/flows/draft")
 
 
 def _views_changed(project: str | None = None) -> None:
@@ -289,7 +289,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Forge Asset Maker API",
-    version="1.0.0",
+    version="1.1.0",
     description="Playful, lightweight, agent-drivable asset maker for game prototyping",
     lifespan=lifespan,
 )
@@ -2406,6 +2406,147 @@ async def api_motion_bake(payload: dict[str, Any], project: str = "default") -> 
     return doc
 
 
+# ---------- Node Studio: workflows made of steps and wires ----------
+# Runs in progress, per project and workflow, so one workflow can't run twice at once.
+_flow_runs: dict[tuple[str, str], tuple[asyncio.Task, Any]] = {}
+_flow_gates: dict[str, dict[str, asyncio.Semaphore]] = {}
+
+
+@app.get("/api/flows/home")
+def api_flows_home(project: str = "default") -> dict[str, Any]:
+    from forge import flow_nodes, flows
+
+    ws = _ws_dir(project)
+    sections = [{"path": d.name, "name": project_overview.humanize(d.name)} for d in sorted(ws.iterdir())
+                if d.is_dir() and not d.name.startswith((".", "_")) and d.name != asset_studio.PILLAR_DIR]
+    return {"catalogue": flow_nodes.catalogue(), "flows": flows.list_flows(ws), "sections": sections,
+            "running": [flow for (owner, flow) in list(_flow_runs) if owner == project]}
+
+
+@app.get("/api/flows")
+async def api_flows_read(id: str, project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    ws = _ws_dir(project)
+    doc = await asyncio.to_thread(_overview_call, flows.read, ws, id)
+    active = _flow_runs.get((project, id))  # before the check: a run that ends meanwhile still counts as running, and says so when it ends
+    return {"doc": doc, "check": await asyncio.to_thread(flows.check, ws, id, doc), "live": active[1].live if active else None}
+
+
+@app.post("/api/flows/create")
+def api_flows_create(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    """A workflow from a template, from a document (a draft), or an empty one."""
+    from forge import flows
+
+    doc = _overview_call(flows.from_template, str(payload["template"])) if payload.get("template") else payload.get("doc") or {}
+    return _overview_call(flows.create, _ws_dir(project), doc)
+
+
+@app.post("/api/flows/save")
+def api_flows_save(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    ws, flow_id = _ws_dir(project), str(payload.get("id") or "")
+    doc = _overview_call(flows.save, ws, flow_id, payload.get("doc"))
+    return {"check": flows.check(ws, flow_id, doc)}
+
+
+@app.post("/api/flows/check")
+def api_flows_check(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    return _overview_call(flows.check, _ws_dir(project), str(payload.get("id") or ""), payload.get("doc"), str(payload.get("target") or ""))
+
+
+@app.post("/api/flows/duplicate")
+def api_flows_duplicate(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    return _overview_call(flows.duplicate, _ws_dir(project), str(payload.get("id") or ""))
+
+
+@app.post("/api/flows/delete")
+async def api_flows_delete(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    flow_id = str(payload.get("id") or "")
+    await api_flows_stop({"id": flow_id}, project)
+    return {"trashed": _overview_call(flows.delete, _ws_dir(project), flow_id)}
+
+
+@app.post("/api/flows/restore")
+def api_flows_restore(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    _overview_call(flows.restore, _ws_dir(project), str(payload.get("id") or ""), str(payload.get("trashed") or ""))
+    return {"ok": True}
+
+
+@app.post("/api/flows/upload")
+async def api_flows_upload(id: str, project: str = "default", file: UploadFile = File(...)) -> dict[str, Any]:
+    from forge import flows
+
+    data = await file.read()
+    return {"path": _overview_call(flows.add_file, _ws_dir(project), id, Path(file.filename or "picture.png").name, data)}
+
+
+@app.post("/api/flows/draft")
+async def api_flows_draft(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    """A workflow laid out from a sentence. Nothing is saved or generated."""
+    from forge import flow_draft
+
+    try:
+        return await flow_draft.draft(str(payload.get("text") or ""), None if load_config().demo_mode else _agent_model_call)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/flows/run")
+async def api_flows_run(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    from forge import flows
+
+    flow_id, ws = str(payload.get("id") or ""), _ws_dir(project)
+    if (project, flow_id) in _flow_runs:
+        raise HTTPException(status_code=409, detail="This workflow is already running.")
+    doc = _overview_call(flows.read, ws, flow_id)
+
+    async def generate(request: dict[str, Any]) -> list[str]:
+        try:
+            return await asset_studio.run_action(actions, project, request)
+        except Exception as exc:  # noqa: BLE001 — said on the step's card
+            raise RuntimeError(_studio_error(request, exc)) from exc
+        finally:
+            _credit_balance_cache.clear()
+
+    async def notify(step: dict[str, Any]) -> None:
+        await ws_manager.broadcast({"type": "flow_run", "project": project, "flow": flow_id, **step})
+
+    run = flows.Run(ws, flow_id, doc, generate, notify, str(payload.get("target") or ""),
+                    on_saved=lambda: workspace_changed(project), gates=_flow_gates.setdefault(project, {}))
+
+    async def go() -> None:
+        result = "failed"
+        try:
+            result = await run.go()
+        except asyncio.CancelledError:
+            result = "stopped"
+        finally:
+            _flow_runs.pop((project, flow_id), None)
+            await ws_manager.broadcast({"type": "flow_run", "project": project, "flow": flow_id, "name": doc["name"], "ended": result})
+
+    _flow_runs[(project, flow_id)] = (asyncio.create_task(go()), run)
+    return {"started": True}
+
+
+@app.post("/api/flows/stop")
+async def api_flows_stop(payload: dict[str, Any], project: str = "default") -> dict[str, Any]:
+    active = _flow_runs.get((project, str(payload.get("id") or "")))
+    if active:
+        active[0].cancel()
+        await asyncio.wait([active[0]], timeout=5)
+    return {"stopped": bool(active)}
+
+
 # ---------- Pixel Studio: prompt-first pixel art ----------
 @app.get("/api/pixel/home")
 def api_pixel_home(project: str = "default") -> dict[str, Any]:
@@ -2778,6 +2919,23 @@ def _is_offline_error(exc: BaseException) -> bool:
     return False
 
 
+def _studio_error(request: dict[str, Any], exc: Exception) -> str:
+    """Why a generation failed, in words for the user."""
+    if isinstance(exc, ProviderError):
+        # The fix is what the user needs next, so it goes with the error.
+        specific = exc.how_to_fix and exc.how_to_fix != ProviderError("", provider="").how_to_fix  # skip the generic default
+        _note_credits(request, exc.provider, exc.message, exc.status_code)
+        return f"{exc.message} {exc.how_to_fix}" if specific else exc.message
+    reason = str(exc).strip() or type(exc).__name__
+    if "Timeout" in type(exc).__name__:
+        reason = "The request took too long (timed out). Large models upload slowly; try a remeshed, smaller model."
+    elif _is_offline_error(exc):
+        reason = ("Could not reach the image service: this computer is offline or could not look up its address "
+                  "(Wi-Fi, VPN or DNS). Check the connection and press Try again.")
+    _note_credits(request, "", reason, 0)
+    return reason[:400]
+
+
 async def _run_studio_job(project: str, job: dict[str, Any], request: dict[str, Any]) -> None:
     try:
         job["outputs"] = await asset_studio.run_action(actions, project, request)
@@ -2786,20 +2944,8 @@ async def _run_studio_job(project: str, job: dict[str, Any], request: dict[str, 
             _sprite_from_job(project, request, job)
         if request.get("pixel") and job["outputs"]:
             _pixel_from_job(project, request, job)
-    except ProviderError as exc:
-        # The fix is what the user needs next, so it goes on the asset page with the error.
-        specific = exc.how_to_fix and exc.how_to_fix != ProviderError("", provider="").how_to_fix  # skip the generic default
-        job["status"], job["error"] = "failed", f"{exc.message} {exc.how_to_fix}" if specific else exc.message
-        _note_credits(request, exc.provider, exc.message, exc.status_code)
     except Exception as exc:  # noqa: BLE001 — report any failure on the asset page
-        reason = str(exc).strip() or type(exc).__name__
-        if "Timeout" in type(exc).__name__:
-            reason = "The request took too long (timed out). Large models upload slowly; try a remeshed, smaller model."
-        elif _is_offline_error(exc):
-            reason = ("Could not reach the image service: this computer is offline or could not look up its address "
-                      "(Wi-Fi, VPN or DNS). Check the connection and press Try again.")
-        job["status"], job["error"] = "failed", reason[:400]
-        _note_credits(request, "", reason, 0)
+        job["status"], job["error"] = "failed", _studio_error(request, exc)
     job["finished_at"] = time.time()
     _credit_balance_cache.clear()  # the job may have spent credits: the next balance read is fresh
     _save_jobs(project)

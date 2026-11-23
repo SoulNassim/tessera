@@ -1,9 +1,9 @@
 {
-  "id": "chat_b18c3ae3b5",
+  "id": "chat_9c59719eae",
   "title": "Set up Pocket Kaiju",
   "group": "General",
-  "created_at": 1794863247.4226108,
-  "updated_at": 1794863247.4226162,
+  "created_at": 1795464389.8407435,
+  "updated_at": 1795464389.8407483,
   "model": "",
   "effort": "medium",
   "handoff_from": null,
@@ -13,7 +13,7 @@
       "role": "user",
       "text": "Pocket Kaiju: a bite-sized 3D arcade brawler. You play Mochi, a pocket-sized pastel kaiju, defending a neon miniature Tokyo from clumsy tin-toy robots. Set the project up.",
       "actions": [],
-      "at": 1794859647.4225714
+      "at": 1795460789.840713
     },
     {
       "role": "agent",
@@ -36,13 +36,13 @@
           "summary": "Created 06-sound/combat/mochi-roar.md"
         }
       ],
-      "at": 1794859707.4225714
+      "at": 1795460849.840713
     },
     {
       "role": "user",
       "text": "Make the three tin robots and Mochi's roar.",
       "actions": [],
-      "at": 1794859767.4225714
+      "at": 1795460909.840713
     },
     {
       "role": "agent",
@@ -65,7 +65,7 @@
           "summary": "Generated 06-sound/combat/mochi-roar.md"
         }
       ],
-      "at": 1794859827.4225714
+      "at": 1795460969.840713
     }
   ]
 }

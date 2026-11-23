@@ -21,6 +21,8 @@ def _isolated_projects(tmp_path_factory: pytest.TempPathFactory, monkeypatch: py
         if server is not None:
             server.actions._stores.clear()
             server.actions._executors.clear()
+            server.workspace_watcher.watched.clear()  # its loop would make an earlier test's projects again
+            server.workspace_watcher.signatures.clear()
 
     forget_open_projects()
     yield

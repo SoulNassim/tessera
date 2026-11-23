@@ -1,6 +1,6 @@
 [project]
 name = "tessera-studio"
-version = "1.0.0"
+version = "1.1.0"
 description = "Tessera Studio: a local, agent-friendly game art studio (2D art, pixel sprites, 3D models, rigs, animations and sound)"
 readme = "README.md"
 license = "LicenseRef-PolyForm-Shield-1.0.0"

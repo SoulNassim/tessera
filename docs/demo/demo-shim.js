@@ -26,7 +26,13 @@
     // Reads that the app sends as writes: building the send sheet's prompt, and saving an unchanged prompt before it.
     if (method === "POST" && lookup === "/api/studio/preview") lookup = key(`/api/studio/preview?path=${encodeURIComponent(body.path)}&action=${body.action}`);
     else if (method === "PATCH" && lookup === "/api/studio/asset" && Object.keys(body.fields || {}).join() === "prompt") lookup = key(`/api/studio/asset?path=${encodeURIComponent(body.path)}`);
-    else if (method !== "GET") return json({ detail: READ_ONLY }, 403);
+    // Node Studio: workflows can be opened and rearranged; running one is what Tessera is for.
+    else if (lookup === "/api/flows/create") lookup = key(`/api/flows/create?of=${encodeURIComponent(body.template || body.doc?.name || "")}`);
+    else if (lookup === "/api/flows/draft") lookup = key(`/api/flows/draft?text=${encodeURIComponent(body.text)}`);
+    else if (lookup === "/api/flows/save" || lookup === "/api/flows/check") {
+      const flow = (await data)[key(`/api/flows?id=${body.id}`)]?.body;
+      if (flow) return json(lookup.endsWith("save") ? { check: flow.check } : flow.check);
+    } else if (method !== "GET") return json({ detail: READ_ONLY }, 403);
     const hit = (await data)[lookup];
     if (!hit) return json({ detail: method === "GET" ? "Not part of the live demo." : READ_ONLY }, method === "GET" ? 404 : 403);
     return json(hit.body, hit.status);

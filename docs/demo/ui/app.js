@@ -28,6 +28,7 @@ const state = {
 };
 
 let motionLoaded = null; // motion.js once Motion Studio has been opened; it owns the editor on screen
+let flowsLoaded = null;  // flows.js, the same for Node Studio
 
 // ---------- helpers ----------
 
@@ -708,6 +709,8 @@ async function finishOnboarding() {
 async function switchProject(name) {
   motionLoaded?.leave();  // saves an open motion while its project is still the current one
   state.motionSel = null;
+  flowsLoaded?.leave();
+  state.flowSel = undefined;  // the workflow last open in the project switched to
   // The last project's page must not stand in for this one while it loads.
   if (name !== state.project) $("#content").innerHTML = `<div class="view-loading"><span class="spinner"></span></div>`;
   await loadProjects(name);
@@ -907,7 +910,7 @@ async function send(override = {}) {
     state.attachments = [];
     renderAttachments();
     renderMessages();
-    const page = state.view.type === "motion" ? { viewing: "Motion Studio", motion: motionLoaded?.current() || null } : state.view.path ? { viewing: state.view.path } : {};
+    const page = state.view.type === "motion" ? { viewing: "Motion Studio", motion: motionLoaded?.current() || null } : state.view.type === "nodes" ? { viewing: "Node Studio", workflow: flowsLoaded?.current() || null } : state.view.path ? { viewing: state.view.path } : {};
     state.session = await api(`/api/agent/sessions/${id}/messages`, { method: "POST", body: { text, attachments, page, model: override.model || state.model || undefined, effort: override.effort || state.effort } });
     const entry = state.sessions.find((s) => s.id === id);
     if (entry) entry.title = state.session.title;
@@ -2369,6 +2372,7 @@ function renderSections() {
     <button class="sec vault-sec${state.view.type === "home" ? " active" : ""}" data-home>${icon("layers")}<span class="sec-name">Overview</span></button>
     <button class="sec vault-sec${state.view.type === "pipeline" || state.view.type === "vault" ? " active" : ""}" data-pipeline title="Every asset, from request to the copy in your game (P)">${icon("flow")}<span class="sec-name">Pipeline</span>${pipelineBadge()}</button>
     <div class="sec-label">Studios</div>
+    <button class="sec vault-sec${state.view.type === "nodes" ? " active" : ""}" data-flow-nav>${icon("nodes")}<span class="sec-name">Node Studio</span></button>
     <button class="sec vault-sec${state.view.type === "pixel" ? " active" : ""}" data-pixel-nav>${icon("grid")}<span class="sec-name">Pixel Studio</span></button>
     <button class="sec vault-sec${state.view.type === "motion" ? " active" : ""}" data-motion-nav>${icon("bones")}<span class="sec-name">Motion Studio</span></button>
     <button class="sec vault-sec${state.view.type === "levels" || (state.view.path || "").startsWith("levels/") ? " active" : ""}" data-levels>${icon("map")}<span class="sec-name">Levels</span></button>
@@ -2399,6 +2403,7 @@ function renderCrumbs() {
   else if (state.view.type === "levels") parts.push(`<strong>Levels</strong>`);
   else if (state.view.type === "pixel") parts.push(state.pixelSel ? `<button data-px-crumb>Pixel Studio</button><span class="sep">/</span><strong>${esc(humanize(state.pixelSel.path.split("/").pop().replace(/\.md$/, "")))}</strong>` : `<strong>Pixel Studio</strong>`);
   else if (state.view.type === "motion") parts.push(state.motionSel ? `<button data-motion-nav>Motion Studio</button><span class="sep">/</span><strong>${esc(state.motionSel.title || "")}</strong>` : `<strong>Motion Studio</strong>`);
+  else if (state.view.type === "nodes") parts.push(state.flowSel && flowsLoaded?.title() ? `<button data-flow-nav>Node Studio</button><span class="sep">/</span><strong>${esc(flowsLoaded.title())}</strong>` : `<strong>Node Studio</strong>`);
   else if (state.view.type === "board") parts.push(`<strong>Board</strong>`);
   else {
     const segs = path.split("/");
@@ -2516,7 +2521,7 @@ function assetTiles(assets, folderPath, opts = {}) {
   const gridKey = opts.grid ?? folderPath;
   return `${bar ? gridBar(assets, folderPath) : ""}<div class="asset-grid"${folderPath !== undefined && !pick ? ` data-grid="${esc(gridKey)}"` : ""}>${assets.map((f) => `
     <button class="asset-tile${pick && state.select.paths.has(f.path) ? " selected" : ""}${f.picked === false ? " nowin" : ""}" ${pick ? `data-select-tile="${esc(f.path)}"` : `data-open="${esc(f.path)}"`} data-tile="${esc(f.path)}"${pick ? "" : ' draggable="true"'} data-name="${esc(displayTitle(f.title))}" data-kind="${esc(f.asset_kind || "")}" data-flags="${tileFlags(f)}" data-changed="${Number(f.changed) || 0}"${f.thumb ? ` data-thumb="${esc(f.thumb)}"` : ""}${f.audio ? ` data-hover-audio="${esc(f.audio)}"` : ""}${f.model ? ` data-hover-model="${esc(f.model)}"` : ""}>
-      <span class="asset-img">${f.thumb ? `<img src="${esc(thumbUrl(f.thumb, 320))}" alt="" loading="lazy" decoding="async">` : f.audio ? `<span class="asset-sound"><span class="wave" aria-hidden="true">${"<i></i>".repeat(14)}</span><small>Hover to listen</small></span>` : kindArt(f.asset_kind)}<span class="kind-tag">${esc(f.asset_kind)}</span>${f.model ? `<span class="tile-3d">${icon("cube")}3D</span>` : ""}${f.thumb ? `<span class="tile-pillar" role="button" tabindex="0" data-make-pillar="${esc(f.thumb)}" title="Make this image a pillar: a style reference for a whole folder">${icon("layers")}</span>` : ""}</span>
+      <span class="asset-img">${f.thumb ? `<img src="${esc(thumbUrl(f.thumb, 320))}" alt="" loading="lazy" decoding="async">` : f.audio ? `<span class="asset-sound"><span class="wave" aria-hidden="true">${"<i></i>".repeat(14)}</span><small>Hover to listen</small></span>` : kindArt(f.asset_kind)}<span class="kind-tag">${esc(f.asset_kind)}</span>${f.model ? `<span class="tile-3d">${icon("cube")}3D</span>` : ""}${f.thumb ? `<span class="tile-pillar" role="button" tabindex="0" data-make-pillar="${esc(f.thumb)}" title="Make this image a pillar: a style reference for a whole folder">${icon("layers")}</span>` : ""}${pick || f.audio ? "" : `<span class="tile-copy"><span role="button" tabindex="0" data-copy-prompt="${esc(f.path)}" title="Copy the full prompt as sent, with the style bible">${icon("copy")}</span><span role="button" tabindex="0" data-copy-images="${esc(f.path)}" title="Copy the pillar images sent with every generation">${icon("images")}</span></span>`}</span>
       <strong>${f.picked === false ? `<i class="nowin-dot" title="No winner picked yet"></i>` : ""}${esc(displayTitle(f.title))}</strong>
       <small class="tile-meta">${esc(tileMeta(f))}</small>
     </button>`).join("")}
@@ -2604,8 +2609,8 @@ async function renderSectionPage(content) {
   const pillars = (sec.pillars || []).length + (sec.text_pillars || []).length;
   const pick = selecting(root);
   const aboutKey = `tessera.about.${state.project}.${root}`;
-  const about = body || others.length;
-  const empty = !all.length && !sec.subsections.length && !body;
+  const about = body;
+  const empty = !all.length && !sec.subsections.length && !body && !others.length;
   content.innerHTML = `
     <div class="doc-bar"><span class="path"></span><div>
       <button class="primary" data-new-asset="${esc(root)}">+ New asset</button>
@@ -2628,9 +2633,9 @@ async function renderSectionPage(content) {
       ${all.filter((f) => !isSound(f)).length > 1 && !pick ? gridBar(all.filter((f) => !isSound(f)), root) : ""}
     </div>
     ${about ? `<div class="sec-about"${storeGet(aboutKey) === "1" ? "" : " hidden"}>
-      ${body ? `<div class="page-body">${withToc(renderMarkdown(stripLead(body), root))}</div>` : ""}
-      ${others.length ? `<h2 class="block-title">Documents & files</h2>${fileBlocks(others)}` : ""}</div>` : ""}
+      <div class="page-body">${withToc(renderMarkdown(stripLead(body), root))}</div></div>` : ""}
     ${own.length ? `<section class="subsec depth-1 sec-own">${assetBlock(sec, root)}</section>` : ""}
+    ${others.length ? `<section class="subsec depth-1 sec-docs"><header class="subsec-head"><h2>Documents</h2><span class="subsec-count">${others.length}</span><span class="subsec-rule"></span></header>${fileBlocks(others)}</section>` : ""}
     ${sec.subsections.map((s) => subsectionHtml(s, root)).join("")}
     ${pick ? selectBar(root) : ""}
     ${empty ? `<p class="lede">Nothing here yet. Ask Tess to fill this section, or add an asset.</p>` : ""}`;
@@ -3025,6 +3030,7 @@ async function mountHero() {
 async function renderViewBody() {
   const ov = state.overview;
   if (state.view.type !== "motion") motionLoaded?.leave();
+  if (state.view.type !== "nodes") flowsLoaded?.leave();
   if (!ov) return;
   if (state.view.type === "doc" && /(^|\/)README\.md$/i.test(state.view.path) && dirOf(state.view.path)) state.view = { type: "folder", path: dirOf(state.view.path) };
   saveView();
@@ -3080,6 +3086,7 @@ async function renderViewBody() {
   if (view.type === "levels") return renderLevels();
   if (view.type === "pixel") return renderPixelPage();
   if (view.type === "motion") return renderMotionPage();
+  if (view.type === "nodes") return renderFlowsPage();
   if (view.type === "board") return renderBoard();
 
   if (view.type === "folder") {
@@ -3175,6 +3182,7 @@ function runningJobs(path) {
 }
 
 const ICON = {
+  nodes: `<rect x="3" y="8" width="7" height="8" rx="1.6"/><rect x="14" y="4" width="7" height="6" rx="1.6"/><rect x="14" y="14" width="7" height="6" rx="1.6"/><path d="M10 12h2M14 7h-2v10h2"/>`,
   flow: `<circle cx="5" cy="12" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="19" cy="12" r="2.2"/><path d="M7.2 12h2.6M14.2 12h2.6"/>`,
   link: `<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>`,
   sort: `<path d="M7 4v16M4 7l3-3 3 3M17 20V4m-3 13 3 3 3-3"/>`,
@@ -3200,6 +3208,7 @@ const ICON = {
   eye: `<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>`,
   upload: `<path d="M12 20V9M7 13l5-5 5 5M5 4h14"/>`,
   box: `<path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5M12 12v9"/>`,
+  images: `<rect x="7" y="7" width="13" height="13" rx="2.2"/><path d="M4 16V6.2A2.2 2.2 0 0 1 6.2 4H16"/><circle cx="11.5" cy="11.5" r="1.4"/><path d="M20 17l-3.5-3.5L10 20"/>`,
   copy: `<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.2"/><path d="M15.5 8.5V6.2A2.2 2.2 0 0 0 13.3 4H6.2A2.2 2.2 0 0 0 4 6.2v7.1a2.2 2.2 0 0 0 2.2 2.2h2.3"/>`,
   inbox: `<path d="M4 13.5 6.5 5h11l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>`,
   send: `<path d="M4 12 20 4l-5 16-3.5-6.5z"/><path d="M11.5 13.5 20 4"/>`,
@@ -3410,6 +3419,66 @@ function nextStep(a, o, jobs) {
   return `<button type="button" class="next-step${s[0] === "check" ? " ready" : ""}" ${s[3]}><span class="ns-ico">${icon(s[0])}</span><span class="ns-text"><small>${s[0] === "check" ? "Done" : "Next step"}</small><b>${s[1]}</b><em>${s[2]}</em></span><span class="ns-go">${icon("chev-right")}</span></button>`;
 }
 
+// "Copy prompt" takes the full prompt a new image is sent with (style rules, style bible and reference rule
+// included); "Copy images" takes the pillar images that go with it. Two buttons, because a paste picks one kind.
+function copyPair(a, compact = false) {
+  const strength = a.meta.pillars || "normal";
+  const n = strength === "off" ? 0 : strength === "light" ? Math.min(2, a.pillars.length) : a.pillars.length;
+  return `<span class="copy-pair${compact ? " compact" : ""}">
+    <button type="button" class="mini" data-copy-prompt="${esc(a.path)}" title="Copy the full prompt as sent, with the style bible">${icon("copy")}${compact ? "Copy" : "Copy prompt"}</button>
+    <button type="button" class="mini" data-copy-images="${esc(a.path)}"${n ? "" : " disabled"} title="${n ? `Copy the ${n} pillar image${n === 1 ? "" : "s"} sent with every generation` : "No pillar images apply to this asset"}">${icon("images")}${compact ? "" : "Copy images "}<b>${n}</b></button>
+  </span>`;
+}
+
+async function copyAssetPrompt(path) {
+  // The clipboard write starts during the click with a promise for the text: browsers drop the permission
+  // once the click is over, and the prompt is still being built on the server at that point.
+  const prompt = api(`/api/studio/copy-pack?path=${encodeURIComponent(path)}`).then(({ prompt }) => {
+    if (!prompt.trim()) throw new Error("this asset has no prompt yet");
+    return prompt;
+  });
+  try {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": prompt.then((t) => new Blob([t], { type: "text/plain" })) })]);
+    } catch (err) {
+      if (/no prompt/.test(err.message)) throw err;
+      // The browser refused: on Windows the server writes the clipboard instead.
+      try { await api("/api/studio/copy-prompt", { method: "POST", body: { path } }); }
+      catch { await navigator.clipboard.writeText(await prompt); }
+    }
+    toast("Copied the full prompt");
+  } catch (err) { toast(`Could not copy: ${err.message}`, true); }
+}
+
+async function copyAssetImages(path, btn) {
+  btn.disabled = true;
+  try {
+    // On Windows the server puts the files themselves on the clipboard: one paste drops every image.
+    const { copied } = await api("/api/studio/copy-images", { method: "POST", body: { path } });
+    toast(`Copied ${copied} pillar image${copied === 1 ? "" : "s"}. Paste them anywhere`);
+  } catch (err) {
+    // Elsewhere a browser can hold one image, so the pillars go as one sheet.
+    try {
+      const { images } = await api(`/api/studio/copy-pack?path=${encodeURIComponent(path)}`);
+      if (!images.length) throw err;
+      const sheet = Promise.all(images.map((p) => loadImage(fileUrl(p)))).then((list) => imageSheet(list));
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": sheet })]);
+      toast(`Copied ${images.length} pillar image${images.length === 1 ? "" : "s"} as one sheet`);
+    } catch (e) { toast(`Could not copy: ${e.message}`, true); }
+  }
+  btn.disabled = false;
+}
+
+// Capture phase: on an asset tile these sit inside the tile's own button, which would open the asset.
+document.addEventListener("click", (event) => {
+  const t = event.target.closest("[data-copy-prompt],[data-copy-images]");
+  if (!t) return;
+  event.stopPropagation();
+  event.preventDefault();
+  if (t.dataset.copyPrompt) copyAssetPrompt(t.dataset.copyPrompt);
+  else copyAssetImages(t.dataset.copyImages, t);
+}, true);
+
 // What the style block says while it is folded.
 function styleSummary(a) {
   const strength = { off: "pillars off", light: "light", normal: "normal", strong: "strong" }[a.meta.pillars || "normal"] || "normal";
@@ -3444,7 +3513,7 @@ function renderAssetPage(a) {
   if (AUDIO_KINDS.includes(a.kind)) return renderAudioAsset(a, title, jobs);
   if (a.kind === "kit") return renderKitAsset(a, title);
   return `
-    <div class="asset-head"><h1 class="title" title="${esc(a.path)}">${esc(title)}</h1><span class="kind-tag">${esc(a.kind)}</span></div>
+    <div class="asset-head"><h1 class="title" title="${esc(a.path)}">${esc(title)}</h1><span class="kind-tag">${esc(a.kind)}</span>${copyPair(a)}</div>
     ${problemJobs(a.path).map((j) => `<div class="job-banner bad"><span class="bad-dot">!</span><span class="grow">${esc(jobLabel(j) || j.action)} ${j.status === "interrupted" ? "was interrupted" : "failed"}: ${esc(j.error || "no details")}</span><button type="button" class="mini" data-action="${esc(j.action)}">Try again</button><button type="button" class="mini" data-dismiss-job="${esc(j.id)}">Dismiss</button></div>`).join("")}
     <div class="asset-top">
       <div class="stage-col"><div class="winner-box drop-zone${stage3d ? " hero-3d" : ""}" data-drop-winner${stage3d ? ` data-hero-model="${esc(stage3d.path)}"` : ""} title="${is2d() ? "Drop an image here to use it as the winner" : "Drop an image to use it as the winner, or a 3D model to add it"}">${a.winner && !stage3d ? `<img src="${esc(fileUrl(a.winner))}" alt="Winner"><span class="drop-hint">${is2d() ? "Drop an image to replace" : "Drop an image to replace, or a 3D model to add"}</span>` : stage3d ? `
@@ -3455,7 +3524,7 @@ function renderAssetPage(a) {
       ${stageTrack(a, o, stage3d)}</div>
       <div class="asset-side">
         ${nextStep(a, o, jobs)}
-        <label class="field-label" for="assetPrompt">Prompt: what this ${esc(a.kind)} looks like</label>
+        <div class="prompt-label-row"><label class="field-label" for="assetPrompt">Prompt: what this ${esc(a.kind)} looks like</label>${copyPair(a, true)}</div>
         <textarea id="assetPrompt" class="prompt-box" rows="5" data-asset="${esc(a.path)}">${esc(a.prompt)}</textarea>
         <div class="make-dock">
           <button type="button" class="dock-tile tone-brand" data-action="candidates">${icon("sparkle")}<b>Images</b><small>New 2D art from the prompt</small></button>
@@ -4088,7 +4157,7 @@ async function makeAsset() {
 
 // The current page and the pages before it survive a refresh, per project.
 const viewKey = () => `forge.view.${state.project}`;
-const PLAIN_VIEWS = ["home", "pipeline", "vault", "levels", "pixel", "motion", "board"];
+const PLAIN_VIEWS = ["home", "pipeline", "vault", "levels", "pixel", "motion", "nodes", "board"];
 const plainView = (v) => (PLAIN_VIEWS.includes(v.type) ? { type: v.type } : { type: v.type, path: v.path });
 
 function saveView() {
@@ -4098,7 +4167,7 @@ function saveView() {
 }
 
 function restoreView() {
-  if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#board"].includes(location.hash)) { state.view = { type: location.hash.slice(1) }; return; }
+  if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#nodes", "#board"].includes(location.hash)) { state.view = { type: location.hash.slice(1) }; return; }
   const hash = location.hash.match(/^#(folder|doc)=(.+)$/);
   if (hash) {
     state.view = { type: hash[1], path: decodeURIComponent(hash[2]), restored: true };
@@ -4161,7 +4230,7 @@ function go(view, { keepForward = false } = {}) {
 window.addEventListener("hashchange", () => {
   const hash = location.hash.match(/^#(folder|doc)=(.+)$/);
   if (hash) go({ type: hash[1], path: decodeURIComponent(hash[2]) });
-  else if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#board"].includes(location.hash)) go({ type: location.hash.slice(1) });
+  else if (["#pipeline", "#vault", "#levels", "#pixel", "#motion", "#nodes", "#board"].includes(location.hash)) go({ type: location.hash.slice(1) });
 });
 
 function openPath(path) {
@@ -5607,6 +5676,7 @@ function connectSocket() {
       if (msg.project === state.project) renderMissingThumbs(msg.project).catch(() => {});
       if (!$("#settingsView").hidden && state.settings?.tab === "accounts") renderSettings();
     }
+    if (msg.type === "flow_run" && msg.project === state.project) flowsLoaded?.onRun(msg);
     if (msg.type === "service_connected") loadServices().then(() => serviceConnected(msg.service));
     // A cover being painted for another project shows on its card as soon as it lands.
     if (msg.type === "studio_job" && msg.job.status === "done" && !$("#projectsView").hidden) openProjects();
@@ -7536,6 +7606,22 @@ document.addEventListener("click", (event) => {
   return state.view.type === "motion" ? renderView() : go({ type: "motion" });
 });
 
+// ---------- Node Studio: workflows made of steps and wires (flows.js, loaded on demand) ----------
+async function renderFlowsPage() {
+  try {
+    flowsLoaded = await import("./flows.js");
+    if (state.view.type !== "nodes") return;
+    await flowsLoaded.render({ api, fileUrl, thumbUrl, esc, toast, state, renderView, humanize, go, settingsDialog, onTitle: renderCrumbs });
+    renderCrumbs();
+  } catch (err) { $("#content").innerHTML = `<div class="empty">${tessArt("error")}<h1>Node Studio</h1><p>${esc(err.message)}</p></div>`; }
+}
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest("[data-flow-nav]")) return;
+  state.flowSel = null;
+  return state.view.type === "nodes" ? renderView() : go({ type: "nodes" });
+});
+
 // ---------- Pixel Studio: a page of its own (sidebar, ⌘K, asset pages and tile menus all lead here) ----------
 // Home: a live "new sprite" maker (pick any picture in the project, see the pixel result as you change size and
 // palette) and the library of every sprite in the project. Editor: full size, with every set in a strip on top.
@@ -8457,7 +8543,7 @@ async function paletteItems() {
   const here = state.view.type === "folder" ? state.view.path : "";
   const actions = [
     ...(onAsset ? [["Generate images", "sparkle", () => openPreview("candidates")], ...(is2d() ? [] : [["Make 3D", "cube", () => openPreview("make_3d")], ["Turnaround views", "turn", () => openPreview("views")], ["Add 3D model", "upload", pickModelFile]])] : []),
-    ["Overview", "layers", () => go({ type: "home" })], ["Pipeline", "flow", () => go({ type: "pipeline" })], ["Copy update note for my coding agent", "flow", () => copyAgentNote("")], ["Final vault", "box", () => go({ type: "vault" })], ["Levels", "map", () => go({ type: "levels" })], ["Pixel Studio", "grid", () => { state.pixelSel = null; go({ type: "pixel" }); }], ["Motion Studio", "bones", () => { state.motionSel = null; go({ type: "motion" }); }], ["New pixel sprite", "grid", () => openPixelNew(state.view.type === "doc" ? state.view.path : "")],
+    ["Overview", "layers", () => go({ type: "home" })], ["Pipeline", "flow", () => go({ type: "pipeline" })], ["Copy update note for my coding agent", "flow", () => copyAgentNote("")], ["Final vault", "box", () => go({ type: "vault" })], ["Levels", "map", () => go({ type: "levels" })], ["Node Studio", "nodes", () => { state.flowSel = null; go({ type: "nodes" }); }], ["Pixel Studio", "grid", () => { state.pixelSel = null; go({ type: "pixel" }); }], ["Motion Studio", "bones", () => { state.motionSel = null; go({ type: "motion" }); }], ["New pixel sprite", "grid", () => openPixelNew(state.view.type === "doc" ? state.view.path : "")],
     [here ? `Generate missing in ${humanize(here.split("/").pop())}` : "Generate all missing", "sparkle", () => batchDialog(here)],
     ...(here ? [["New asset here", "sparkle", () => newAssetDialog(here)]] : []),
     ...(here ? [["Select assets here", "check", () => document.querySelector("[data-select-toggle]")?.click()]] : []),

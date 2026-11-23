@@ -129,6 +129,43 @@ def record(client, ws: Path, scrub: list[str]) -> dict[str, dict]:
     return json.loads(text)
 
 
+def record_flows(client, ws: Path, data: dict[str, dict]) -> None:
+    """Node Studio: one finished workflow on Mochi, and every template and example as something to open and play with."""
+    import asyncio
+
+    from forge import flow_nodes, flows
+
+    def post(endpoint: str, body: dict) -> dict:
+        return client.post(endpoint, params={"project": PROJECT}, json=body).json()
+
+    def keep(of: str, body: dict) -> str:
+        made = post("/api/flows/create", body)
+        data[f"/api/flows/create?{urlencode({'of': of})}"] = {"status": 200, "body": made}
+        data[f"/api/flows?id={made['id']}"] = {"status": 200, "body": client.get("/api/flows", params={"project": PROJECT, "id": made["id"]}).json()}
+        return made["id"]
+
+    async def quiet(*_: object) -> list[str]:
+        return []
+
+    board = [a for g in data["/api/board"]["body"]["groups"] for a in g["assets"]]
+    mochi = next(a for a in board if a["title"].lower() == "mochi" and a.get("image"))
+    doc = flows.from_template("recolours")
+    doc["name"] = "Mochi in new colours"
+    doc["nodes"][0]["fields"] = {"path": mochi["image"], "name": "Mochi"}
+    flow = post("/api/flows/create", {"doc": doc})["id"]
+    asyncio.run(flows.Run(ws, flow, flows.read(ws, flow), quiet, quiet, target="recolor").go())  # free steps only
+    data[f"/api/flows?id={flow}"] = {"status": 200, "body": client.get("/api/flows", params={"project": PROJECT, "id": flow}).json()}
+    data["/api/flows/home"] = {"status": 200, "body": client.get("/api/flows/home", params={"project": PROJECT}).json()}
+    for template in flow_nodes.catalogue()["templates"]:
+        keep(template["id"], {"template": template["id"]})
+    keep("My workflow", {"doc": {"name": "My workflow"}})  # the empty canvas
+    examples = re.search(r"const EXAMPLES = (\[.*?\]);", (UI / "flows.js").read_text(encoding="utf-8"), re.S)
+    for text in re.findall(r'"([^"]+)"', examples[1]):
+        drafted = post("/api/flows/draft", {"text": text})
+        data[f"/api/flows/draft?{urlencode({'text': text})}"] = {"status": 200, "body": drafted}
+        keep(drafted["doc"]["name"], {"doc": drafted["doc"]})
+
+
 def copy_ui() -> None:
     (OUT / "ui").mkdir(parents=True)
     for item in UI.iterdir():
@@ -142,6 +179,8 @@ def copy_ui() -> None:
     fixed = app.replace('"/ui/', '"ui/').replace("`/projects/${", files)
     assert fixed.count(files) == 2, "fileUrl/projectFileUrl changed: update build_demo.py"
     (OUT / "ui" / "app.js").write_text(fixed, encoding="utf-8")
+    for page in (OUT / "ui").glob("*.js"):
+        page.write_bytes(page.read_bytes().replace(b'"/ui/', b'"ui/'))
     html = (UI / "index.html").read_text(encoding="utf-8").replace('"/ui/', '"ui/')
     head = ('<script src="demo-shim.js"></script>\n  <link rel="stylesheet" href="demo.css" />\n'
             '  <meta name="robots" content="noindex" />\n</head>')
@@ -173,6 +212,7 @@ def main() -> None:
     # Keys also come from the Windows user environment in the registry, which clearing os.environ doesn't reach.
     forge_config._read_win32_user_env = lambda _name: ""
 
+    from forge import flows
     from forge.server.app import app, workspace_agent
 
     client = TestClient(app, base_url="http://127.0.0.1:8420")
@@ -187,8 +227,10 @@ def main() -> None:
     if OUT.exists():
         shutil.rmtree(OUT)
     data = record(client, ws, [str(tmp.resolve()), str(tmp), str(Path.home())])
+    record_flows(client, ws, data)
     copy_ui()
     shutil.copytree(ws, OUT / "projects" / PROJECT / "workspace", ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ws / flows.FLOWS_DIR, OUT / "projects" / PROJECT / "workspace" / flows.FLOWS_DIR, ignore=shutil.ignore_patterns("*.json", "*.md", ".gitignore"))
     text = json.dumps(data, separators=(",", ":"))
     # The demo is published: not even a masked key (its last four characters) may be in it.
     leaked = re.findall(r'"(\w+_api_key)":"([^"]+)"', text)

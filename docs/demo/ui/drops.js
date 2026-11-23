@@ -90,7 +90,7 @@ function startDrag() {
   const chat = $(".panel.chat");
   if (chat && !chat.querySelector(".dz-split")) {
     chat.insertAdjacentHTML("beforeend", `<div class="dz-split"><div data-dz="attach">${ctx.icon("upload")}<span>Attach to message</span></div>
-      <div data-dz="tess"${ctx.agentReady() ? "" : ` class="off"`}><img class="tess-art" src="/ui/art/tess-drops.webp" alt="" aria-hidden="true" draggable="false">${ctx.icon("sparkle")}<span>Let Tess sort them</span></div></div>`);
+      <div data-dz="tess"${ctx.agentReady() ? "" : ` class="off"`}><img class="tess-art" src="ui/art/tess-drops.webp" alt="" aria-hidden="true" draggable="false">${ctx.icon("sparkle")}<span>Let Tess sort them</span></div></div>`);
   }
 }
 

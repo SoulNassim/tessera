@@ -444,7 +444,7 @@ def key_art_asset(ws_dir: Path, title: str, pitch: str) -> str:
     """The project's key-art asset, made on first use with a prompt from the project's pitch."""
     root = ws_dir.resolve()
     for doc in sorted(root.rglob("*.md")):
-        if TRASH_DIR in doc.parts:
+        if any(part.startswith(".") for part in doc.relative_to(root).parts):  # the trash, workflows' trial results
             continue
         try:
             meta, _, _ = split_frontmatter(doc.read_text(encoding="utf-8"))

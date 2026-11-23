@@ -110,7 +110,7 @@ export function leave() {
 async function renderHome() {
   const content = $("#content");
   let data;
-  try { data = await ctx.api("/api/motion/home"); } catch (err) { content.innerHTML = `<div class="empty"><img class="tess-art" src="/ui/art/tess-error.webp" alt="" aria-hidden="true" draggable="false"><h1>Motion Studio</h1><p>${ctx.esc(err.message)}</p></div>`; return; }
+  try { data = await ctx.api("/api/motion/home"); } catch (err) { content.innerHTML = `<div class="empty"><img class="tess-art" src="ui/art/tess-error.webp" alt="" aria-hidden="true" draggable="false"><h1>Motion Studio</h1><p>${ctx.esc(err.message)}</p></div>`; return; }
   if (ctx.state.view.type !== "motion" || ctx.state.motionSel) return;
   const { esc } = ctx;
   const card = (r) => {
@@ -129,7 +129,7 @@ async function renderHome() {
     <header><span class="mo-eyebrow">${ic("bones")} Motion Studio</span><h1>Animate your rigs</h1>
       <p>Pose bones, set keys and shape the timing by hand, from the bind pose or on top of a generated take. Baking writes a clip your game can play.</p></header>
     ${data.rigs.length ? `<div class="mo-rigs">${data.rigs.map(card).join("")}</div>`
-      : `<div class="mo-none"><img class="tess-art md" src="/ui/art/tess-rig.webp" alt="" aria-hidden="true" draggable="false"><strong>No rigged models yet</strong><p>Open a 3D character's page and press Rig, or drop a rigged .glb onto an asset. It will show up here.</p></div>`}
+      : `<div class="mo-none"><img class="tess-art md" src="ui/art/tess-rig.webp" alt="" aria-hidden="true" draggable="false"><strong>No rigged models yet</strong><p>Open a 3D character's page and press Rig, or drop a rigged .glb onto an asset. It will show up here.</p></div>`}
   </div>`;
   $("#moHome").addEventListener("click", (event) => {
     const pick = event.target.closest("[data-mo-new], [data-mo-open]");
