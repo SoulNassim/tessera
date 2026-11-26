@@ -1,8 +1,8 @@
-"""Generation services the user signs in to instead of pasting an API key (ElevenLabs, Meshy, fal, Higgsfield).
+"""Generation services the user signs in to instead of pasting an API key (ElevenLabs, Meshy, fal, Higgsfield, Tripo).
 
 Each one runs a hosted MCP server behind OAuth. Tessera signs in like any MCP client: it discovers the server's
 authorization server, registers itself (dynamic registration when offered, otherwise the client metadata
-document Tessera publishes on its website), runs the authorization-code flow with PKCE in the user's browser,
+document Tessera publishes on its website, or a client id the service registered by hand with a loopback callback), runs the authorization-code flow with PKCE in the user's browser,
 and keeps the tokens on this computer. Tess then sees each connected service's tools and can call
 them, so a new service is one entry in SERVICES, with no code per provider.
 """
@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
+import http.server
 import json
 import secrets
+import socket
 import subprocess
 import threading
 import time
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 
@@ -31,6 +34,11 @@ SERVICES: dict[str, dict[str, str]] = {
     "meshy": {"label": "Meshy", "login": "meshy-cli", "makes": "3D models, textures, rigs and animations"},
     "fal": {"label": "fal", "url": "https://mcp.fal.ai/mcp-relay", "makes": "Hundreds of image, video, 3D and audio models"},
     "higgsfield": {"label": "Higgsfield", "url": "https://mcp.higgsfield.ai/mcp", "makes": "Images and cinematic video"},
+    # Tripo Studio's MCP has neither dynamic registration nor metadata documents: it only takes client ids Tripo
+    # registers by hand, each with one loopback callback. Tessera borrows the Claude Code one
+    # (http://localhost:3000/callback) until Tripo registers a Tessera id; `_loopback` catches that callback.
+    "tripo": {"label": "Tripo", "url": "https://msapi.tripo3d.ai/mcp", "makes": "3D models, textures, rigs and animations",
+              "client_id": "studio-claude-code", "callback_port": "3000"},
 }
 # Tessera's client metadata document, for servers without dynamic registration. Served by GitHub Pages from docs/.
 CLIENT_METADATA_URL = brand.SITE + "oauth/client.json"
@@ -188,7 +196,14 @@ def start_sign_in(service: str, redirect_uri: str) -> str:
             raise ServiceError(str(exc)) from exc
     meta = discover(service)
     auth, resource = meta["auth"], meta["resource"]
-    client_info = _register(service, auth, redirect_uri)
+    if spec.get("client_id"):
+        # A client id the service registered by hand, tied to its own loopback callback.
+        redirect_uri = f"http://localhost:{spec['callback_port']}/callback"
+        _loopback(int(spec["callback_port"]))
+        client_info = {"client_id": spec["client_id"], "client_secret": "", "redirect_uri": redirect_uri}
+        _update(service, {"client": client_info})
+    else:
+        client_info = _register(service, auth, redirect_uri)
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(24)
     scopes = spec.get("scope") or " ".join(resource.get("scopes_supported") or auth.get("scopes_supported") or [])
@@ -234,6 +249,86 @@ def finish_sign_in(state: str, code: str) -> str:
     _sessions.pop(service, None)
     _tools.pop(service, None)
     return service
+
+
+def callback_page(title: str, text: str, ok: bool) -> str:
+    """The page the browser shows after signing in, from Tessera's own callback or a loopback one."""
+    return ("<!doctype html><meta charset=utf-8><title>Tessera</title><body style=\"margin:0;display:grid;place-items:center;height:100vh;"
+            "background:#070708;color:#f4f4f5;font:16px system-ui\"><div style=\"text-align:center;max-width:420px\">"
+            f"<div style=\"font-size:46px\">{'🤜🤛' if ok else '⚠️'}</div><h1 style=\"font-size:24px\">{html.escape(title)}</h1>"
+            f"<p style=\"color:#a1a1aa\">{html.escape(text)}</p></div>{'<script>setTimeout(()=>window.close(),1800)</script>' if ok else ''}")
+
+
+def handle_callback(state: str, code: str, error: str = "", error_description: str = "") -> tuple[str, str, bool, str]:
+    """Finish a sign-in from the browser's callback: (title, text, ok, service id or "")."""
+    if error or not code:
+        return "Sign-in cancelled", error_description or error or "No code came back. Try again from Tessera.", False, ""
+    try:
+        service = finish_sign_in(state, code)
+    except (ServiceError, httpx.HTTPError) as exc:
+        return "Sign-in failed", str(exc), False, ""
+    return f"{SERVICES[service]['label']} is connected", "Tessera can use it now. You can close this tab and go back to Tessera.", True, service
+
+
+_loopbacks: dict[int, list[http.server.HTTPServer]] = {}
+LOOPBACK_TTL_S = 900
+
+
+def _loopback(port: int) -> None:
+    """Listen on localhost:<port> for one sign-in's /callback (both IPv4 and IPv6, since browsers may resolve
+    localhost to either), then stop. Kept for LOOPBACK_TTL_S so a slow sign-in still lands."""
+    with _lock:
+        if port in _loopbacks:
+            return
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 — http.server's name
+            parts = urlsplit(self.path)
+            if parts.path != "/callback":
+                self.send_error(404)
+                return
+            query = {k: v[0] for k, v in parse_qs(parts.query).items()}
+            title, text, ok, _ = handle_callback(query.get("state", ""), query.get("code", ""), query.get("error", ""), query.get("error_description", ""))
+            body = callback_page(title, text, ok).encode()
+            self.send_response(200 if ok else 400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            if ok:
+                threading.Thread(target=_stop_loopback, args=(port,), daemon=True).start()
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    class V6Server(http.server.ThreadingHTTPServer):
+        address_family = socket.AF_INET6
+
+    servers: list[http.server.HTTPServer] = []
+    try:
+        servers.append(http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler))
+    except OSError as exc:
+        raise ServiceError(f"Tessera needs port {port} free to finish this sign-in, and something else is using it. "
+                           f"Close that app (often a dev server) and try again.") from exc
+    try:
+        servers.append(V6Server(("::1", port), Handler))
+    except OSError:
+        pass  # no IPv6 loopback here; 127.0.0.1 is enough
+    with _lock:
+        _loopbacks[port] = servers
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    timer = threading.Timer(LOOPBACK_TTL_S, _stop_loopback, args=(port,))
+    timer.daemon = True
+    timer.start()
+
+
+def _stop_loopback(port: int) -> None:
+    with _lock:
+        servers = _loopbacks.pop(port, [])
+    for server in servers:
+        server.shutdown()
+        server.server_close()
 
 
 def _access_token(service: str, force_refresh: bool = False) -> str:

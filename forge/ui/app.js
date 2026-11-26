@@ -1111,7 +1111,7 @@ function closeSettings() {
 }
 
 // Generation services the user signs in to (hosted MCP + OAuth), shown in setup and Settings → Generators.
-const SERVICE_LOGO = { elevenlabs: "/ui/logos/elevenlabs.svg", meshy: "/ui/logos/meshy.png", fal: "/ui/logos/fal.png", higgsfield: "/ui/logos/higgsfield.png" };
+const SERVICE_LOGO = { elevenlabs: "/ui/logos/elevenlabs.svg", meshy: "/ui/logos/meshy.png", fal: "/ui/logos/fal.png", higgsfield: "/ui/logos/higgsfield.png", tripo: "/ui/logos/tripo.svg" };
 
 async function loadServices() {
   try { state.services = (await api("/api/services")).services; } catch { state.services = state.services || []; }
@@ -1266,6 +1266,9 @@ function imageVia() {
 // and shows the credits that are left.
 function tripoAccountCard(cfg) {
   const t = state.tripo, keyed = !!cfg.tripo_configured;
+  // Signing in to Tripo Studio (its MCP server, OAuth) is separate from the API key: it gives Tess Tripo's Studio tools.
+  const sv = (state.services || []).find((s) => s.id === "tripo"), studio = !!sv?.connected, waiting = state.serviceWaiting === "tripo";
+  const studioStatus = studio ? "✓ Tripo Studio signed in · Tess can use it" : waiting ? "Finish signing in to Tripo Studio in your browser…" : sv?.error ? `Tripo Studio: ${sv.error}` : "";
   const credits = t?.balance ? `${Math.round(t.balance.balance).toLocaleString()} credits` : "";
   const status = !keyed ? "Not connected" : t?.error ? `Key saved, but Tripo says: ${t.error}` : credits ? `Connected · ${credits}${t.balance.frozen ? ` (${Math.round(t.balance.frozen)} in use)` : ""}` : "Connected · checking credits…";
   const isDefault = cfg.default_3d_provider === "tripo" && !cfg.default_3d_service_model;
@@ -1284,13 +1287,15 @@ function tripoAccountCard(cfg) {
       ${tog("tripo_smart_low_poly", "Smart low poly", "Game-ready topology, 500 to 20k triangles")}
       ${tog("tripo_quad", "Quad meshes", "Also saves the FBX next to the GLB")}
       <p class="st-note">Each Make 3D window can still change these for one run.</p></div></details>` : "";
-  return `<div class="acct${keyed && !t?.error ? " on" : ""}" data-acct="tripo">
+  const studioBtn = studio ? `<button class="ghost" data-service-disconnect="tripo" title="Sign out of Tripo Studio">Sign out of Studio</button>`
+    : `<button class="${keyed ? "ghost" : "primary"}" data-service-connect="tripo" title="Sign in with your Tripo Studio account, no key needed">${waiting ? "Waiting…" : "Sign in to Studio"}</button>`;
+  return `<div class="acct${(keyed && !t?.error) || studio ? " on" : ""}${waiting ? " wait" : ""}" data-acct="tripo">
     <span class="acct-logo"><b>T</b></span>
     <div class="acct-text"><strong>Tripo</strong><small>3D models, rigs, animations, retopo and re-texturing</small>
-      <span class="acct-status">${keyed && !t?.error ? "✓ " : ""}${esc(status)}</span>${form}${defaults}</div>
+      <span class="acct-status">${keyed && !t?.error ? "✓ " : ""}${esc(status)}</span>${studioStatus ? `<span class="acct-status">${waiting ? `<i class="agent-spin"></i>` : ""}${esc(studioStatus)}</span>` : ""}${form}${defaults}</div>
     <div class="acct-act">${keyed ? `${isDefault ? `<span class="chip">3D engine</span>` : `<button class="primary" data-tripo-default>Use for 3D</button>`}
       <a class="ghost btn" href="https://platform.tripo3d.ai/billing" target="_blank" rel="noopener">Credits ↗</a>
-      <button class="ghost" data-tripo-disconnect>Disconnect</button>` : ""}</div></div>`;
+      <button class="ghost" data-tripo-disconnect>Disconnect</button>` : ""}${studioBtn}</div></div>`;
 }
 
 $("#settingsView").addEventListener("submit", async (event) => {
@@ -1352,7 +1357,7 @@ function accountCard(p, cfg) {
       : p.service ? `<button class="primary" data-service-connect="${p.id}">${waiting ? "Waiting…" : "Sign in"}</button>` : ""}</div></div>`;
 }
 
-// Models made by hand on a website (Tripo Studio's credits can't be used by Tessera): download them, and they arrive here.
+// Models made by hand on a website, such as Tripo Studio: download them, and they arrive here.
 function modelInboxCard() {
   const box = state.modelInbox;
   if (!box) return "";

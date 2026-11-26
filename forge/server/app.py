@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import json
-from html import escape as html_escape
 import os
 import re
 import socket
@@ -1488,23 +1487,10 @@ async def api_service_connect(service: str, request: Request) -> dict[str, Any]:
 
 @app.get("/api/services/callback", response_class=HTMLResponse)
 async def api_service_callback(state: str = "", code: str = "", error: str = "", error_description: str = "") -> HTMLResponse:
-    def page(title: str, text: str, ok: bool) -> HTMLResponse:
-        return HTMLResponse(
-            "<!doctype html><meta charset=utf-8><title>Tessera</title><body style=\"margin:0;display:grid;place-items:center;height:100vh;"
-            "background:#070708;color:#f4f4f5;font:16px system-ui\"><div style=\"text-align:center;max-width:420px\">"
-            f"<div style=\"font-size:46px\">{'🤜🤛' if ok else '⚠️'}</div><h1 style=\"font-size:24px\">{html_escape(title)}</h1>"
-            f"<p style=\"color:#a1a1aa\">{html_escape(text)}</p></div>{'<script>setTimeout(()=>window.close(),1800)</script>' if ok else ''}",
-            status_code=200 if ok else 400)
-
-    if error or not code:
-        return page("Sign-in cancelled", error_description or error or "No code came back. Try again from Tessera.", False)
-    try:
-        service = await asyncio.to_thread(services.finish_sign_in, state, code)
-    except (services.ServiceError, httpx.HTTPError) as exc:
-        return page("Sign-in failed", str(exc), False)
-    label = services.SERVICES[service]["label"]
-    await ws_manager.broadcast({"type": "service_connected", "service": service})
-    return page(f"{label} is connected", "Tessera can use it now. You can close this tab and go back to Tessera.", True)
+    title, text, ok, service = await asyncio.to_thread(services.handle_callback, state, code, error, error_description)
+    if ok:
+        await ws_manager.broadcast({"type": "service_connected", "service": service})
+    return HTMLResponse(services.callback_page(title, text, ok), status_code=200 if ok else 400)
 
 
 @app.delete("/api/services/{service}")
@@ -3564,7 +3550,7 @@ def api_set_model_inbox(payload: dict[str, Any]) -> dict[str, Any]:
     return _model_inbox_status(project)
 
 
-# --- Tripo: connect with an API key (Tripo has no OAuth), balance, and its model tools ---
+# --- Tripo: connect with an API key (the API has no OAuth; Tripo Studio's MCP sign-in is in services.py), balance, and its model tools ---
 
 def _tripo_status(balance: dict[str, float] | None = None, error: str = "") -> dict[str, Any]:
     cfg = load_config()

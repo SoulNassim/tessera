@@ -117,7 +117,7 @@ Tessera is **built for APIs**. Sign in or paste a key, and you pay the providers
 |---|---|
 | **Meshy** | 3D models, rigging, animation and images |
 | **ElevenLabs** | Sound effects, voices, music, and many image models. One sign-in gives you images *and* sound |
-| **Tripo** | 3D models (v3.1 down to the low-poly P1/P2), rigs, preset animations, retopology, re-texturing |
+| **Tripo** | 3D models (v3.1 down to the low-poly P1/P2), rigs, preset animations, retopology, re-texturing. Or sign in to Tripo Studio (no key) and Tess uses its tools in the chat |
 | **fal, Higgsfield** | Many image, video and 3D models |
 | **Google Gemini** | Images |
 | **Stability AI** | Music and loops |

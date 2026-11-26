@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import socket
+import time
+import urllib.request
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
 import pytest
@@ -114,3 +117,46 @@ def test_metadata_document_when_no_dynamic_registration(fake: FakeService) -> No
 def test_a_used_or_unknown_state_is_refused(fake: FakeService) -> None:
     with pytest.raises(services.ServiceError, match="expired"):
         services.finish_sign_in("nope", "the-code")
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_hand_registered_client_signs_in_through_a_loopback_callback(fake: FakeService, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Like Tripo Studio: no dynamic registration, no metadata documents, one client id with a fixed loopback callback.
+    fake.dynamic = False
+    port = _free_port()
+    monkeypatch.setitem(services.SERVICES, "demo", {"label": "Demo", "url": MCP, "makes": "tests", "client_id": "studio-x", "callback_port": str(port)})
+    url = services.start_sign_in("demo", "http://127.0.0.1:8420/api/services/callback")
+    query = parse_qs(urlsplit(url).query)
+    assert query["client_id"] == ["studio-x"] and query["redirect_uri"] == [f"http://localhost:{port}/callback"]
+    fake.challenge = query["code_challenge"][0]
+    callback = f"http://127.0.0.1:{port}/callback?" + urlencode({"state": query["state"][0], "code": "the-code"})
+    with urllib.request.urlopen(callback, timeout=10) as resp:
+        assert resp.status == 200 and "Demo is connected" in resp.read().decode()
+    assert "demo" in services.connected()
+    for _ in range(50):  # the listener stops once the sign-in is done
+        if port not in services._loopbacks:
+            break
+        time.sleep(0.05)
+    assert port not in services._loopbacks
+
+
+def test_loopback_port_in_use_is_explained(fake: FakeService, monkeypatch: pytest.MonkeyPatch) -> None:
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        monkeypatch.setitem(services.SERVICES, "demo", {"label": "Demo", "url": MCP, "makes": "tests", "client_id": "studio-x", "callback_port": str(port)})
+        with pytest.raises(services.ServiceError, match=f"port {port}"):
+            services.start_sign_in("demo", "http://127.0.0.1:8420/api/services/callback")
+
+
+def test_tripo_signs_in_with_the_claude_code_client(fake: FakeService) -> None:
+    tripo = services.SERVICES["tripo"]
+    assert tripo["url"] == "https://msapi.tripo3d.ai/mcp"
+    assert tripo["client_id"] == "studio-claude-code" and tripo["callback_port"] == "3000"
+    assert any(s["id"] == "tripo" for s in services.status())

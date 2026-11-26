@@ -1,6 +1,7 @@
 """Tripo (v3 API): one small async client shared by the 3D provider and the game tools.
 
-Tripo has no OAuth or CLI login: an account is connected with an API key from the Tripo Console
+The Tripo API has no OAuth or CLI login: an account is connected with an API key from the Tripo Console
+(Tripo Studio's MCP server does sign in with OAuth; that lives in forge/services.py, for the chat)
 (https://platform.tripo3d.ai/api-keys). `connect()` checks the key against the balance endpoint, so a bad key
 fails at once and the Settings card can show the credits that are left.
 
